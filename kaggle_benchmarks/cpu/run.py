@@ -29,8 +29,9 @@ import time
 # includes Task 6 helpers + audit fixes, notably A1: _restore_path takes
 # destination_state — the engine's probe requires this signature).
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-# cayleypy-fast ref: "main" while iterating; pin an immutable SHA for archived runs.
-_CAYLEYPY_FAST_REF = "main"
+# cayleypy-fast pinned to an immutable commit SHA: runaway-beam fix
+# (_GlobalTopK first-chunk top-k cap) + size gate + pytest plugin.
+_CAYLEYPY_FAST_REF = "45c5985986c10f520113863547bc8fae4f82fc32"
 
 # Install cayleypy with --no-deps so pip does not re-resolve torch (cayleypy
 # declares torch>=2.6; on the CPU kernel the preinstalled torch is fine).
