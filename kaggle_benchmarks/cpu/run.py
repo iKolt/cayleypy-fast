@@ -1,8 +1,8 @@
-"""cayleypy-fast CPU benchmark kernel: legacy vs engine, same process.
+﻿"""cayleypy-fast CPU benchmark kernel: legacy vs engine, same process.
 
 Runs the CPU benchmark matrix (mirroring cayleypy/algo/beam_search_benchmark.py)
-twice per config — once legacy (graph.beam_search) and once with the fast engine
-(patch-averse, via cayleypy_fast.wrap(graph).beam_search) — and writes
+twice per config вЂ” once legacy (graph.beam_search) and once with the fast engine
+(patch-averse, via cayleypy_fast.wrap(graph).beam_search) вЂ” and writes
 cpu_benchmark_result.json. Also asserts: engine actually engaged per graph, and
 path_found parity legacy vs engine.
 
@@ -27,11 +27,11 @@ import time
 
 # cayleypy pinned to an immutable commit SHA (feature/beam-search-perf tip;
 # includes Task 6 helpers + audit fixes, notably A1: _restore_path takes
-# destination_state — the engine's probe requires this signature).
+# destination_state вЂ” the engine's probe requires this signature).
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
 # cayleypy-fast pinned to an immutable commit SHA: runaway-beam fix
 # (_GlobalTopK first-chunk top-k cap) + size gate + pytest plugin.
-_CAYLEYPY_FAST_REF = "45c5985986c10f520113863547bc8fae4f82fc32"
+_CAYLEYPY_FAST_REF = "0732d801addce60d0d2eafeb6efe51aa5b5c61f7"
 
 # Install cayleypy with --no-deps so pip does not re-resolve torch (cayleypy
 # declares torch>=2.6; on the CPU kernel the preinstalled torch is fine).

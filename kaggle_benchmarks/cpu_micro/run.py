@@ -1,4 +1,4 @@
-"""cayleypy-fast CPU MICRO kernel: re-validate the two ms-scale regression rows.
+﻿"""cayleypy-fast CPU MICRO kernel: re-validate the two ms-scale regression rows.
 
 lrx8_simple (0.91x) and lrx16_advanced (0.74x) were below 1.0 in cpu-bench v1
 because per-call create_engine setup dominated searches that finish in 6-16
@@ -15,7 +15,7 @@ import sys
 import time
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "3cd0773dcd0942420dfe42e4895ca9898122d044"  # per-graph engine cache
+_CAYLEYPY_FAST_REF = "0732d801addce60d0d2eafeb6efe51aa5b5c61f7"  # per-graph engine cache
 
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 subprocess.check_call(

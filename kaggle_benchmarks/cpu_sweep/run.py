@@ -1,4 +1,4 @@
-"""cayleypy-fast CPU SWEEP kernel: beam-width scaling on cube333 iterated_batched.
+﻿"""cayleypy-fast CPU SWEEP kernel: beam-width scaling on cube333 iterated_batched.
 
 bw in {256, 1e3, 1e4, 1e5}, 30 steps, 2 measured runs each, legacy vs engine.
 The bw=256 row is the negative control for the size gate: 256*12 = 3072 < 2^16
@@ -15,7 +15,7 @@ import sys
 import time
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "45c5985986c10f520113863547bc8fae4f82fc32"  # runaway-beam fix
+_CAYLEYPY_FAST_REF = "0732d801addce60d0d2eafeb6efe51aa5b5c61f7"  # runaway-beam fix
 
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 subprocess.check_call(

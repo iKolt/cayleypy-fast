@@ -1,4 +1,4 @@
-"""cayleypy-fast CPU DEEP kernel: cube333 iterated/iterated_batched at bw=2^18.
+﻿"""cayleypy-fast CPU DEEP kernel: cube333 iterated/iterated_batched at bw=2^18.
 
 Mirrors the GPU deep tier (cayleypy AGENTS.md section 10): 100 steps with a
 hashed MITM neighbourhood of radius 3, one measured run. Legacy at bw=2^18 is
@@ -15,7 +15,7 @@ import sys
 import time
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "45c5985986c10f520113863547bc8fae4f82fc32"  # runaway-beam fix
+_CAYLEYPY_FAST_REF = "0732d801addce60d0d2eafeb6efe51aa5b5c61f7"  # runaway-beam fix
 
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 subprocess.check_call(

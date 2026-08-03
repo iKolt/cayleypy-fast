@@ -1,4 +1,4 @@
-"""cayleypy-fast CPU HEAVY kernel: legacy vs engine, cube444/cube555 x 3 runs.
+﻿"""cayleypy-fast CPU HEAVY kernel: legacy vs engine, cube444/cube555 x 3 runs.
 
 Companion of kaggle_benchmarks/cpu (full 11-row matrix). This kernel repeats
 the two heavy rows with 3 measured runs each (vs 1 in the matrix kernel) for
@@ -17,7 +17,7 @@ import sys
 import time
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "45c5985986c10f520113863547bc8fae4f82fc32"  # runaway-beam fix
+_CAYLEYPY_FAST_REF = "0732d801addce60d0d2eafeb6efe51aa5b5c61f7"  # runaway-beam fix
 
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 subprocess.check_call(
