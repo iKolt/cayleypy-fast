@@ -117,11 +117,13 @@ class PermutedHashVectors:
     path (two int32 hashes per generator, combined via ``.view(torch.int64)``).
     """
 
-    __slots__ = ("vh", "dual_int32")
+    __slots__ = ("vh", "dual_int32", "_numba_vh_t")
 
     def __init__(self, vh: torch.Tensor, dual_int32: bool) -> None:
         self.vh = vh
         self.dual_int32 = dual_int32
+        # Lazily built (n, 2*G)-transposed numpy copy for the optional numba tier.
+        self._numba_vh_t: Optional[np.ndarray] = None
 
 
 def _permute_vector(v: torch.Tensor, inv_perms: torch.Tensor, dual_int32: bool) -> torch.Tensor:
@@ -173,10 +175,24 @@ def hash_neighbors_tiled(hv: PermutedHashVectors, states: torch.Tensor) -> torch
     :return: int64 hashes of shape ``(B, n_generators)`` — row = beam state,
         column = generator. Bit-identical to ``graph.hasher.make_hashes`` run on
         the materialized neighbor states.
+
+    Dispatch: the optional numba tier (T4) handles the CPU dual-int32 case
+    (13-39x faster than torch's non-BLAS int32 matmul; bit-equal), torch
+    otherwise. ``CAYLEYPY_FAST_NUMBA_DISABLE=1`` forces torch.
     """
-    n_generators = hv.vh.shape[1] // 2 if hv.dual_int32 else hv.vh.shape[1]
     if hv.dual_int32:
+        try:
+            from .numba_kernels import (  # pylint: disable=import-outside-toplevel
+                hash_neighbors_dual_int32_numba,
+                numba_available,
+            )
+
+            if numba_available():
+                return hash_neighbors_dual_int32_numba(hv, states)
+        except ImportError:
+            pass  # numba tier not installed; torch path below.
         h32 = states.to(torch.int32) @ hv.vh  # (B, 2G) int32; wraps mod 2^32 per element.
+        n_generators = hv.vh.shape[1] // 2
         return h32.view(-1, n_generators, 2).view(torch.int64).reshape(-1, n_generators)
     return states.to(torch.int64) @ hv.vh  # (B, G) int64; wraps mod 2^64.
 
@@ -427,11 +443,7 @@ class FastBeamEngine:
         """Hash all G neighbors of each tile state; return ``(G*T,)`` int64 gen-major flat."""
         outs = []
         for z in tile_states.split(self._HASH_SUBTILE_ROWS):
-            if self.hv.dual_int32:
-                h32 = z.to(torch.int32) @ self.hv.vh  # (t, 2G)
-                h64 = h32.view(-1, self.n_generators, 2).view(torch.int64).reshape(-1, self.n_generators)
-            else:
-                h64 = z.to(torch.int64) @ self.hv.vh  # (t, G)
+            h64 = hash_neighbors_tiled(self.hv, z)  # (t, G); numba tier dispatches inside.
             outs.append(h64)
         hashes = outs[0] if len(outs) == 1 else torch.cat(outs)
         return hashes.t().reshape(-1)  # Gen-major flat: index = g * T + t.
