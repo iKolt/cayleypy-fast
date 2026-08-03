@@ -194,6 +194,32 @@ lazy scoring + chunked dedup; CPU benchmark gate (>= 2x target; if regression on
 suite row, default CPU to legacy and flag). Char tests pinning exact paths rewritten
 to invariant assertions (in cayleypy-fast's own suite; cayleypy suite untouched).
 
+**T2 measured (Kaggle 4 vCPU CPU, torch 2.10.0+cpu, cayleypy@0b7e109, engine@45c5985 —
+post runaway-beam fix; paired legacy-vs-engine in `kaggle_benchmarks/cpu*` kernels):**
+
+| Kernel | Row | legacy | engine | speedup |
+|---|---|---|---|---|
+| cpu | lrx8/lrx32/cube444/cube555 iterated | 55.6ms / 179ms / 2.64s / 19.1s | 24.8ms / 74.9ms / 0.98s / 6.61s | **2.24× / 2.39× / 2.70× / 2.90×** |
+| cpu | cube333 simple/advanced/iterated | 44.3s / 61.1s / 35.6s | 30.4s / 38.6s / 25.8s | 1.45× / 1.58× / 1.38× |
+| cpu-sweep | cube333 it_batched bw 1e3/1e4/1e5 | 0.50s / 5.97s / 58.5s | 0.23s / 2.55s / 29.1s | **2.19× / 2.34× / 2.01×** |
+| cpu-sweep | bw=256 gate negative control | 0.170s | 0.142s | 1.20× (legacy-vs-legacy ✓) |
+| cpu-deep | cube333 iterated/it_batched bw=2^18 mitm=3 | 127.6s / 588.9s | 88.4s / 328.0s | 1.44× / **1.80×** |
+| cpu | lrx8_simple / lrx16_advanced (ms-scale rows) | 22.9ms / 2.39ms | 25.1ms / 3.22ms | 0.91× / 0.74× ⚠ setup overhead |
+
+Gate position: ≥2× achieved on 10 of 17 engine-engaged rows (all iterated-mode rows
+pass); the two <1× rows are ms-scale searches (path found in 6–16 steps) dominated
+by `create_engine` per-call setup (VH build, `argsort`, `central_by_gen`) — fix planned
+via per-graph engine cache (WeakKeyDictionary). Deep rows (bw=2^18) give the largest
+absolute savings (~4.4 min/run for it_batched) despite sub-2× ratios.
+
+**Bug found & fixed en route (engine@45c5985):** `_GlobalTopK.offer` first-chunk path
+stored chunks > `beam_width` wholesale (typical step has exactly ONE offer), so the
+beam grew ~G× per step — lrx16+MLP reached 839K states at step 21 (814s vs 2.5s legacy).
+Fixed with an immediate top-k cap + `finalize` invariant (`numel <= k`) + regression test
+with wall-clock bound. Small-graph parity tests couldn't see it (lrx6 state space = 720);
+a long-scramble big-graph parity test was added.
+
+
 **T3 — Triton tier.** Kernel + autotune + fallback matrix; sm_60 validation on
 Kaggle; bit-equality tests; perf check vs T-eng CUDA.
 
