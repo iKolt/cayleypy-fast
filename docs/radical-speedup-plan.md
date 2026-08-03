@@ -203,11 +203,14 @@ post runaway-beam fix; paired legacy-vs-engine in `kaggle_benchmarks/cpu*` kerne
 | cpu | cube333 simple/advanced/iterated | 44.3s / 61.1s / 35.6s | 30.4s / 38.6s / 25.8s | 1.45× / 1.58× / 1.38× |
 | cpu-sweep | cube333 it_batched bw 1e3/1e4/1e5 | 0.50s / 5.97s / 58.5s | 0.23s / 2.55s / 29.1s | **2.19× / 2.34× / 2.01×** |
 | cpu-sweep | bw=256 gate negative control | 0.170s | 0.142s | 1.20× (legacy-vs-legacy ✓) |
+| cpu-heavy (3 runs) | cube444 iterated / iterated_batched bw=1e4 | 10.48s / 19.22s | 5.22s / 7.15s | **2.01× / 2.69×** |
+| cpu-heavy (3 runs) | cube555 iterated / iterated_batched bw=1e4 | 1.91s / 3.48s | 0.71s / 1.18s | **2.69× / 2.96×** |
 | cpu-deep | cube333 iterated/it_batched bw=2^18 mitm=3 | 127.6s / 588.9s | 88.4s / 328.0s | 1.44× / **1.80×** |
 | cpu | lrx8_simple / lrx16_advanced (ms-scale rows) | 22.9ms / 2.39ms | 25.1ms / 3.22ms | 0.91× / 0.74× ⚠ setup overhead |
 
-Gate position: ≥2× achieved on 10 of 17 engine-engaged rows (all iterated-mode rows
-pass); the two <1× rows are ms-scale searches (path found in 6–16 steps) dominated
+Gate position: ≥2× achieved on 14 of 21 engine-engaged rows (all iterated and
+iterated_batched rows pass; heavy rows confirmed with 3-run statistics, stdev ≤0.2s);
+the two <1× rows are ms-scale searches (path found in 6–16 steps) dominated
 by `create_engine` per-call setup (VH build, `argsort`, `central_by_gen`) — fix planned
 via per-graph engine cache (WeakKeyDictionary). Deep rows (bw=2^18) give the largest
 absolute savings (~4.4 min/run for it_batched) despite sub-2× ratios.
@@ -225,6 +228,16 @@ Kaggle; bit-equality tests; perf check vs T-eng CUDA.
 
 **T4 — numba tier.** Parallel fused chunk kernel; int8/int64 states; bit-equality
 tests; CPU benchmark re-run; per-device default tier table finalized.
+
+**T4 spike measured (laptop, torch 2.13 CPU, numba njit parallel prange vs torch
+int32 matmul on dual-int32 hash tiles):** torch int32 matmul does NOT dispatch to
+an optimized BLAS integer GEMM — measured 0.75-2 GMAC/s. The numba kernel with
+transposed (2G, n) layout + fused int8 read is **13-39x faster** across
+B∈{1e4,1e5,2^18} × n∈{8,32,54,150} × G∈{3,12,24}, bit-equal everywhere.
+Tier integrated (engine@0732d80): `hash_neighbors_tiled` dispatches dual-int32
+to numba by default, `CAYLEYPY_FAST_NUMBA_DISABLE=1` forces torch; 17 tier
+tests (bit-equality x 12 shapes, dispatch, kill-switch, cache, speed guard >2x).
+End-to-end combined run (engine cache + numba) in flight on the 5 Kaggle kernels.
 
 **T5 — Hybrid predictors + iterated parity hardening.** Streaming per-generator
 NN/custom scoring w/ running topk; tiny-MLP smoke test (trained in-test) on both
