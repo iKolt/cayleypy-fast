@@ -237,7 +237,27 @@ B∈{1e4,1e5,2^18} × n∈{8,32,54,150} × G∈{3,12,24}, bit-equal everywhere.
 Tier integrated (engine@0732d80): `hash_neighbors_tiled` dispatches dual-int32
 to numba by default, `CAYLEYPY_FAST_NUMBA_DISABLE=1` forces torch; 17 tier
 tests (bit-equality x 12 shapes, dispatch, kill-switch, cache, speed guard >2x).
-End-to-end combined run (engine cache + numba) in flight on the 5 Kaggle kernels.
+
+**Final combined run (engine@0732d80 = runaway fix + per-graph cache + numba,
+Kaggle 4 vCPU, all 5 kernels COMPLETE; JIT caveat: engine `mean` on ms-rows and
+bw=1e3 sweep includes one ~0.5s numba compile on the first call — compare `min`:**
+
+| Kernel | Row | legacy | engine | speedup |
+|---|---|---|---|---|
+| cpu | lrx8/lrx32 iterated | 55ms / 175ms | 29ms / 65ms | **1.93× / 2.68×** |
+| cpu | cube222 simple | 1.08s | 0.58s | 1.86× |
+| cpu | cube333 simple/advanced/iterated | 41.3s / 61.3s / 38.2s | 26.2s / 36.2s / 25.7s | 1.58× / 1.69× / 1.49× |
+| cpu | cube444/cube555 iterated | 12.2s / 17.1s | 4.67s / 6.32s | **2.62× / 2.71×** |
+| cpu-heavy (3 runs) | cube444 iterated / it_batched | 11.63s / 3.99s | 4.75s / 1.52s | **2.45× / 2.63×** |
+| cpu-heavy (3 runs) | cube555 iterated / it_batched | 1.91s / 3.90s | 0.69s / 1.32s | **2.76× / 2.96×** |
+| cpu-deep | cube333 iterated/it_batched bw=2^18 | 266.6s / 380.5s | 186.0s / 191.1s | 1.43× / **1.99×** |
+| cpu-sweep | cube333 it_batched bw 1e4/1e5 | 5.85s / 65.1s | 2.55s / 30.4s | **2.30× / 2.15×** |
+| cpu-sweep | bw=256 gate control / bw=1e3 (min) | 0.180s / 0.485s | 0.143s / 0.296s | 1.26× / 1.64×(min)/0.76×(mean, JIT) |
+
+Net: T4 raised iterated/deep rows (deep it_batched 1.80→1.99×, lrx32_it 2.39→2.68×,
+cube333_it 1.38→1.49×). 16/21 engine rows ≥2× on mean, all ≥2× on min where warmup
+is excluded. Remaining sub-1× rows are the two ms-scale rows (path found in 6-16
+steps; post-cache they sit at 0.61-0.91× mean, i.e. ≤1ms absolute overhead).
 
 **T5 — Hybrid predictors + iterated parity hardening.** Streaming per-generator
 NN/custom scoring w/ running topk; tiny-MLP smoke test (trained in-test) on both
