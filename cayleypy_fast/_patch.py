@@ -22,6 +22,18 @@ if TYPE_CHECKING:
 ENV_DISABLE = "CAYLEYPY_FAST_DISABLE"
 _DISABLED_VALUES = {"1", "true", "yes", "on"}
 
+# Size gate (plan, "Packaging & activation"): on tiny problems the engine's
+# setup/matmul overhead dominates, so those route to legacy. The engine is
+# engaged only when ``beam_width * n_generators >= min_bg`` OR
+# ``beam_width >= min_beam``. Overridable via env vars so the parity test
+# suite can force the engine on for small beams:
+#   CAYLEYPY_FAST_MIN_BG=0 CAYLEYPY_FAST_MIN_BEAM=0  -> engine everywhere.
+ENV_MIN_BG = "CAYLEYPY_FAST_MIN_BG"
+ENV_MIN_BEAM = "CAYLEYPY_FAST_MIN_BEAM"
+_DEFAULT_MIN_BG = 2**16
+_DEFAULT_MIN_BEAM = 512
+_DEFAULT_BEAM_WIDTH = 1000  # Legacy default (cayleypy BeamSearchAlgorithm.search).
+
 
 class FastBeamSearchAlgorithm(_LegacyBeamSearchAlgorithm):
     """Drop-in ``BeamSearchAlgorithm`` replacement.
@@ -32,34 +44,47 @@ class FastBeamSearchAlgorithm(_LegacyBeamSearchAlgorithm):
     "Packaging & activation".
     """
 
-    def _fast_engine(self, mode: str, predictor: Any) -> Any:
+    @staticmethod
+    def _size_gate_thresholds() -> "tuple[int, int]":
+        try:
+            return int(os.environ.get(ENV_MIN_BG, _DEFAULT_MIN_BG)), int(
+                os.environ.get(ENV_MIN_BEAM, _DEFAULT_MIN_BEAM)
+            )
+        except ValueError:
+            return _DEFAULT_MIN_BG, _DEFAULT_MIN_BEAM
+
+    def _fast_engine(self, mode: str, predictor: Any, *, beam_width: int = 0) -> Any:
+        beam_width = beam_width or _DEFAULT_BEAM_WIDTH
+        min_bg, min_beam = self._size_gate_thresholds()
+        n_gens = self.graph.definition.n_generators
+        if beam_width * n_gens < min_bg and beam_width < min_beam:
+            return None
         try:
             from .engine import create_engine  # pylint: disable=import-outside-toplevel
         except ImportError:
-            # Engine module drifted against this cayleypy version; stay on legacy.
             return None
         return create_engine(self.graph, mode, predictor)
 
     def search_simple(self, *args: Any, **kwargs: Any) -> "BeamSearchResult":
-        engine = self._fast_engine("simple", kwargs.get("predictor"))
+        engine = self._fast_engine("simple", kwargs.get("predictor"), beam_width=kwargs.get("beam_width", 0))
         if engine is not None:
             return engine.search_simple(*args, **kwargs)
         return super().search_simple(*args, **kwargs)
 
     def search_advanced(self, *args: Any, **kwargs: Any) -> "BeamSearchResult":
-        engine = self._fast_engine("advanced", kwargs.get("predictor"))
+        engine = self._fast_engine("advanced", kwargs.get("predictor"), beam_width=kwargs.get("beam_width", 0))
         if engine is not None:
             return engine.search_advanced(*args, **kwargs)
         return super().search_advanced(*args, **kwargs)
 
     def search_iterated(self, *args: Any, **kwargs: Any) -> "BeamSearchResult":
-        engine = self._fast_engine("iterated", kwargs.get("predictor"))
+        engine = self._fast_engine("iterated", kwargs.get("predictor"), beam_width=kwargs.get("beam_width", 0))
         if engine is not None:
             return engine.search_iterated(*args, **kwargs)
         return super().search_iterated(*args, **kwargs)
 
     def search_iterated_batched(self, *args: Any, **kwargs: Any) -> "BeamSearchResult":
-        engine = self._fast_engine("iterated_batched", kwargs.get("predictor"))
+        engine = self._fast_engine("iterated_batched", kwargs.get("predictor"), beam_width=kwargs.get("beam_width", 0))
         if engine is not None:
             return engine.search_iterated_batched(*args, **kwargs)
         return super().search_iterated_batched(*args, **kwargs)

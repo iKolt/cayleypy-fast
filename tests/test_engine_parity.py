@@ -25,6 +25,18 @@ FAST_GRAPH_DEFS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _force_engine_on(monkeypatch):
+    """Parity tests must exercise the engine even on small beams.
+
+    The production size gate (``CAYLEYPY_FAST_MIN_BG`` / ``CAYLEYPY_FAST_MIN_BEAM``)
+    routes small problems to legacy; zeroing the thresholds here keeps these
+    parity tests meaningful (engine vs legacy), as before the gate existed.
+    """
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BG", "0")
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BEAM", "0")
+
+
 def _make_graph(name: str) -> CayleyGraph:
     return CayleyGraph(FAST_GRAPH_DEFS[name](), random_seed=42)
 
@@ -189,3 +201,59 @@ def test_engine_debug_scores_present_when_scored(beam_mode):
     # by step 2 there are 9 > 4), so debug_scores must be populated for every search that ran >= 2 steps.
     if result.path_length > 1:
         assert len(result.debug_scores) >= 1
+
+
+def test_engine_beam_stays_capped_with_nn_predictor():
+    """Regression: runaway-beam bug in ``_GlobalTopK.offer``.
+
+     A typical engine step issues exactly ONE ``offer`` per policy (the whole beam
+     fits one tile). If the first offered chunk exceeded ``beam_width`` the old
+     first-chunk path stored it wholesale, skipping the top-k cap — so the beam
+     grew ~G x every step (lrx16 + MLP predictor: beam hit 839,475 states at
+     step 21 and the run took 814 s vs 2.5 s legacy). The fix caps the first
+     chunk with an immediate top-k.
+
+     This test pins legacy vs engine outcome parity on that exact configuration
+     (lrx16 + pretrained MLP predictor, 120-move scramble) with a generous wall
+    -clock bound that the buggy version exceeds by >6x.
+    """
+    import time
+
+    from cayleypy.predictor import Predictor
+
+    def run_once(use_engine: bool):
+        np_seed()
+        graph = CayleyGraph(PermutationGroups.lrx(16), random_seed=42)
+        predictor = Predictor.pretrained(graph)
+        state = graph.random_walks(width=1, length=121)[0][-1]
+        if use_engine:
+            assert cayleypy_fast.enable()
+        t0 = time.perf_counter()
+        try:
+            result = graph.beam_search(start_state=state, beam_mode="simple", predictor=predictor)
+        finally:
+            if use_engine:
+                cayleypy_fast.disable()
+        return result, time.perf_counter() - t0
+
+    legacy_result, legacy_time = run_once(False)
+    engine_result, engine_time = run_once(True)
+
+    assert engine_result.path_found == legacy_result.path_found
+    assert engine_result.path_found
+    assert engine_result.path_length == legacy_result.path_length
+    # Buggy engine: >800s; fixed: ~3-10s. 5x legacy time also covers slow CI CPUs.
+    assert engine_time < max(
+        120.0, 5 * legacy_time + 30
+    ), f"engine too slow: {engine_time:.1f}s (legacy {legacy_time:.1f}s)"
+
+
+def np_seed():
+    """Deterministic seeds matching cayleypy's conftest convention."""
+    import random
+
+    import numpy as np
+
+    np.random.seed(12345)
+    random.seed(12345)
+    torch.manual_seed(12345)

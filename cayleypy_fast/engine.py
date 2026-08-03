@@ -234,7 +234,14 @@ class _GlobalTopK:
                 self._score_buffered(score_fn)
             else:
                 # First offered chunk alone exceeds the beam: nothing buffered.
-                self.scores = score_fn(parents, gens)
+                scores = score_fn(parents, gens)
+                if scores.numel() > self.k:
+                    # Cap immediately: the typical engine step has exactly ONE
+                    # offer (whole beam fits one tile), so without this top-k the
+                    # beam would grow geometrically step over step.
+                    keep = torch.topk(scores, k=self.k, largest=False, sorted=False).indices
+                    scores, hashes, parents, gens = scores[keep], hashes[keep], parents[keep], gens[keep]
+                self.scores = scores
                 self.hashes, self.parents, self.gens = hashes, parents, gens
                 self.scored = True
                 return
@@ -260,6 +267,7 @@ class _GlobalTopK:
                 return None, None, None, None
             return torch.cat(self.raw_hashes), torch.cat(self.raw_parents), torch.cat(self.raw_gens), None
         assert self.scores is not None
+        assert self.hashes is not None and self.hashes.numel() <= self.k
         best = float(self.scores.min()) if self.scores.numel() > 0 else None
         return self.hashes, self.parents, self.gens, best
 

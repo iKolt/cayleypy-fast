@@ -55,3 +55,83 @@ def test_enable_noop_with_warning_when_probe_fails(monkeypatch):
     assert not cayleypy_fast.is_enabled()
     for module in PATCHED_MODULES:
         assert module.BeamSearchAlgorithm is LEGACY_CLASS
+
+
+# --- Size gate tests -----------------------------------------------------------
+# Default gate: engine only when beam_width * n_generators >= 2**16 OR
+# beam_width >= 512. Small problems must route to legacy.
+
+
+def _boom_create_engine(graph, mode, predictor):  # noqa: ARG001
+    raise AssertionError("engine.create_engine must not be called (size gate off)")
+
+
+def _lrx_graph():
+    from cayleypy import CayleyGraph, PermutationGroups
+
+    return CayleyGraph(PermutationGroups.lrx(6), random_seed=42)
+
+
+def test_size_gate_routes_small_problems_to_legacy(monkeypatch):
+    """beam_width=4 on lrx6 (3 gens): 12 << 2^16 and 4 < 512 -> legacy path."""
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BG", str(2**16))
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BEAM", "512")
+    monkeypatch.setattr("cayleypy_fast.engine.create_engine", _boom_create_engine)
+    graph = _lrx_graph()
+    assert cayleypy_fast.enable()
+    try:
+        result = graph.beam_search(start_state=graph.central_state, beam_width=4, max_steps=5)
+    finally:
+        cayleypy_fast.disable()
+    assert result.path_found
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"beam_width": 512},  # meets min_beam
+        {"beam_width": 1000},  # meets min_beam; also no-beam_width default below
+        {},  # default beam_width=1000
+    ],
+)
+def test_size_gate_engages_engine_when_large(monkeypatch, kwargs):
+    """Large (or default) beams must engage the engine; creation booms."""
+    monkeypatch.delenv("CAYLEYPY_FAST_MIN_BG", raising=False)
+    monkeypatch.delenv("CAYLEYPY_FAST_MIN_BEAM", raising=False)
+    monkeypatch.setattr("cayleypy_fast.engine.create_engine", _boom_create_engine)
+    graph = _lrx_graph()
+    assert cayleypy_fast.enable()
+    try:
+        with pytest.raises(AssertionError, match="size gate off"):
+            graph.beam_search(start_state=graph.central_state, beam_mode="advanced", max_steps=5, **kwargs)
+    finally:
+        cayleypy_fast.disable()
+
+
+def test_size_gate_env_override_forces_engine_on(monkeypatch):
+    """Setting both thresholds to 0 makes the engine engage even for tiny beams."""
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BG", "0")
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BEAM", "0")
+    monkeypatch.setattr("cayleypy_fast.engine.create_engine", _boom_create_engine)
+    graph = _lrx_graph()
+    assert cayleypy_fast.enable()
+    try:
+        with pytest.raises(AssertionError, match="size gate off"):
+            graph.beam_search(start_state=graph.central_state, beam_width=4, max_steps=5)
+    finally:
+        cayleypy_fast.disable()
+
+
+def test_size_gate_invalid_env_falls_back_to_defaults(monkeypatch):
+    """Non-numeric env values must not crash; defaults apply."""
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BG", "banana")
+    monkeypatch.setenv("CAYLEYPY_FAST_MIN_BEAM", "n/a")
+    monkeypatch.setattr("cayleypy_fast.engine.create_engine", _boom_create_engine)
+    graph = _lrx_graph()
+    assert cayleypy_fast.enable()
+    try:
+        # Small beam -> defaults gate engine off -> legacy works.
+        result = graph.beam_search(start_state=graph.central_state, beam_width=4, max_steps=5)
+    finally:
+        cayleypy_fast.disable()
+    assert result.path_found
