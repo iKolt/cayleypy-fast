@@ -135,3 +135,34 @@ def test_size_gate_invalid_env_falls_back_to_defaults(monkeypatch):
     finally:
         cayleypy_fast.disable()
     assert result.path_found
+
+
+# --- Per-graph engine cache ---------------------------------------------------
+
+
+def test_engine_cached_per_graph_instances():
+    """create_engine must return the SAME engine object for repeated calls on one graph.
+
+    Kaggle cpu-bench showed 0.74x-0.91x on ms-scale rows because per-call engine
+    setup (VH build, argsort, central_by_gen) dominated 6-16-step searches.
+    """
+    from cayleypy import CayleyGraph, MatrixGroups  # pylint: disable=import-outside-toplevel
+
+    from cayleypy_fast import engine as engine_module  # pylint: disable=import-outside-toplevel
+
+    graph = _lrx_graph()
+    e1 = engine_module.create_engine(graph, "simple", None)
+    e2 = engine_module.create_engine(graph, "advanced", None)
+    assert e1 is not None
+    assert e1 is e2
+
+    # A different graph instance gets its own engine.
+    other = _lrx_graph()
+    e3 = engine_module.create_engine(other, "simple", None)
+    assert e3 is not None
+    assert e3 is not e1
+
+    # Negative cache: matrix groups consistently yield None.
+    matrix_graph = CayleyGraph(MatrixGroups.heisenberg())
+    assert engine_module.create_engine(matrix_graph, "simple", None) is None
+    assert engine_module.create_engine(matrix_graph, "simple", None) is None

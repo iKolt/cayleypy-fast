@@ -44,6 +44,7 @@ reproduces this byte-for-byte for parity.
 
 import contextlib
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, Optional
 
 import numpy as np
@@ -879,8 +880,19 @@ def _probe_ok() -> bool:
     return _PROBE_CACHE["ok"]
 
 
+# Per-graph engine cache: FastBeamEngine is stateless across searches (all of
+# its attributes are immutable graph-derived constants: VH matrix, permutations,
+# central_by_gen; per-step state lives in locals), so one instance can serve
+# every search on the same graph. Weak keys let graphs be garbage-collected.
+# Values may be None (negative cache: e.g. matrix groups) — only keys are weak.
+# Rationale (Kaggle cpu-bench): ms-scale rows (lrx16 etc.) were 0.74x-0.91x
+# because per-call create_engine setup (VH build, argsort, central_by_gen)
+# dominated searches that finish in 6-16 steps.
+_ENGINE_CACHE: "weakref.WeakKeyDictionary[CayleyGraph, Optional[FastBeamEngine]]" = weakref.WeakKeyDictionary()
+
+
 def create_engine(graph: "CayleyGraph", _mode: str, _predictor: Any) -> Optional[FastBeamEngine]:
-    """Create an engine for one beam search, or ``None`` if the fast path is unavailable.
+    """Create (or fetch cached) engine for this graph, or ``None`` if unavailable.
 
     Gate (plan, section "Engine"): probe passed AND permutation group AND
     ``string_encoder is None`` AND dot-product (non-identity) hasher. The mode
@@ -888,7 +900,9 @@ def create_engine(graph: "CayleyGraph", _mode: str, _predictor: Any) -> Optional
     """
     if not _probe_ok():
         return None
+    if graph in _ENGINE_CACHE:
+        return _ENGINE_CACHE[graph]
     hv = build_permuted_hash_vectors(graph)
-    if hv is None:
-        return None
-    return FastBeamEngine(graph, hv)
+    engine = FastBeamEngine(graph, hv) if hv is not None else None
+    _ENGINE_CACHE[graph] = engine
+    return engine
