@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install torch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install cayleypy with --no-deps (keeps the torch pin; see README)
+        run: |
+          pip install --no-deps "cayleypy @ git+https://github.com/cayleypy/cayleypy.git@main"
+          pip install h5py kagglehub numba numpy scipy
+      - name: Install cayleypy-fast
+        run: pip install --no-deps -e .[test]
+      - name: Run tests
+        run: pytest
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install torch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install cayleypy with --no-deps (keeps the torch pin; see README)
+        run: |
+          pip install --no-deps "cayleypy @ git+https://github.com/cayleypy/cayleypy.git@main"
+          pip install h5py kagglehub numba numpy scipy
+      - name: Install cayleypy-fast with lint extras
+        run: pip install --no-deps -e .[lint,test]
+      - name: black
+        run: black --check ./cayleypy_fast ./tests ./conftest.py
+      - name: pylint
+        run: pylint ./cayleypy_fast
+      - name: mypy
+        run: mypy ./cayleypy_fast
+
+  cayleypy-compat:
+    # Validation plan item 2: cayleypy's own suite must stay green with the patch enabled.
+    name: cayleypy suite with patch enabled
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: cayleypy-fast
+      - uses: actions/checkout@v4
+        with:
+          repository: cayleypy/cayleypy
+          path: cayleypy-src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install torch (CPU)
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install cayleypy with --no-deps and cayleypy-fast
+        run: |
+          pip install --no-deps -e ./cayleypy-src
+          pip install h5py kagglehub numba numpy scipy
+          pip install --no-deps -e ./cayleypy-fast[test]
+      - name: Run cayleypy's suite with cayleypy_fast.enable() active
+        working-directory: cayleypy-src
+        run: |
+          python -c "import cayleypy_fast, pytest, sys; assert cayleypy_fast.enable(); sys.exit(pytest.main())"

@@ -1,0 +1,106 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools"]
+
+[project]
+# Pure Python + Triton/numba JIT sources: no native build step -> py3-none-any wheel.
+name = "cayleypy-fast"
+version = "0.1.0"
+description = "Pluggable high-performance beam search for CayleyPy (pure torch engine + Triton/numba tiers)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "CayleyPy Foundation" }]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+
+# torch>=2.5 (NOT >=2.6): Kaggle pins torch==2.5.1+cu121 while cayleypy declares
+# torch>=2.6. Documented install order (see README): install cayleypy with
+# --no-deps, then cayleypy-fast, then pin torch LAST.
+dependencies = [
+    "cayleypy>=0.1.0,<1.0",
+    "numpy",
+    "torch>=2.5",
+]
+
+[project.optional-dependencies]
+# Tier T-cpu: parallel fused chunk kernels (optional import, tier-gated).
+numba = ["numba"]
+lint = [
+    "black",
+    "mypy==1.15.0",
+    "pylint",
+]
+test = [
+    "pytest",
+    "pytest-benchmark",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/cayleypy/cayleypy-fast"
+
+[tool.setuptools.packages.find]
+include = ["cayleypy_fast*"]
+
+# Local dev installs cayleypy as an editable PEP 660 install from the sibling
+# checkout (invisible to mypy's site-packages scan); point mypy at the checkout.
+# CI installs cayleypy non-editable, so the directory is unused there.
+[tool.mypy]
+mypy_path = "$MYPY_CONFIG_FILE_DIR/../cayleypy"
+
+# Mirrors cayleypy's own mypy override list (needed because mypy_path above
+# pulls cayleypy's sources into the analysis).
+[[tool.mypy.overrides]]
+module = ["numba.*"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = ["networkx.*"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = ["tensorflow.*"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = ["scipy.*"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = ["h5py.*"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = ["kagglehub.*"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = ["sympy.*"]
+ignore_missing_imports = true
+
+[tool.pylint."FORMAT"]
+max-line-length = 120
+max-module-lines = 2000
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "consider-using-enumerate",
+    "consider-using-f-string",
+    "fixme",
+    "missing-function-docstring",
+    "missing-module-docstring",
+    "no-else-return",
+    "too-few-public-methods",
+    "too-many-arguments",
+    "too-many-branches",
+    "too-many-instance-attributes",
+    "too-many-locals",
+    "too-many-positional-arguments",
+    "too-many-public-methods",
+    "too-many-return-statements",
+    "too-many-statements",
+]
+
+[tool.black]
+line-length = 120
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
