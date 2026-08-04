@@ -26,7 +26,7 @@ subprocess.check_call(
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "33197dbfba0dd30de57a2104b804920b3ee1b1f4"
+_CAYLEYPY_FAST_REF = "ae3989f5f53cb371d5efdda5dc719462d8a466db"
 
 subprocess.check_call(
     [
@@ -92,7 +92,7 @@ def make_graph(name: str) -> CayleyGraph:
 # per-step time at FULL beams, not solves:
 #   - Cube graphs (G=12/24) saturate any ladder beam within ~7 steps of the
 #     fixed scrambles; max_steps=10 is enough.
-#   - lrx32 has only 3 generators, so 10 steps reach just 3^10 ~= 59k states —
+#   - lrx32 has only 3 generators, so 10 steps reach just 3^10 ~= 59k states ???
 #     it needs ~20 steps against a deep (nbt, length-80) scramble to fill
 #     2^20+ beams. A hamming-guided lrx search may still solve early; steps_run
 #     is recorded, so ladder rows with few saturated steps are still readable.
