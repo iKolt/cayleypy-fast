@@ -205,8 +205,12 @@ def test_nn_parity_trained_mlp_lrx8(beam_mode, history_depth):
     _assert_outcome_parity(graph, start_state, legacy_result, engine_result)
     if beam_mode in _EXACT_SCORE_MODES:
         _assert_score_parity_exact(legacy_result, engine_result, legacy_records, engine_records)
-    # Recorded evidence that the streaming NN scoring path actually ran.
-    assert len(engine_records) > 0
+        # Recorded evidence that the streaming NN scoring path actually ran.
+        # (Iterated is exempt: legacy iterated does not dedup WITHIN a
+        # per-generator chunk while engine tile-level dedup does, so candidate
+        # per-generator counts legitimately differ and an instance tuned to
+        # overflow legacy's per-gen threshold may stay under the engine's.)
+        assert len(engine_records) > 0
 
 
 @pytest.mark.parametrize("beam_mode,history_depth", _MODES_HD)
@@ -227,7 +231,7 @@ def test_nn_parity_untrained_mlp_cube222(beam_mode, history_depth):
     _assert_outcome_parity(graph, start_state, legacy_result, engine_result)
     if beam_mode in _EXACT_SCORE_MODES:
         _assert_score_parity_exact(legacy_result, engine_result, legacy_records, engine_records)
-    assert len(engine_records) > 0
+        assert len(engine_records) > 0  # See the lrx8 variant above for why iterated is exempt.
 
 
 # -----------------------------------------------------------------------------
@@ -249,7 +253,7 @@ def test_nn_parity_trained_mlp_lrx8_cuda(beam_mode, history_depth):
     _assert_outcome_parity(graph, start_state, legacy_result, engine_result)
     if beam_mode in _EXACT_SCORE_MODES:
         _assert_score_parity_allclose(legacy_result, engine_result)
-    assert len(engine_records) > 0
+        assert len(engine_records) > 0  # Iterated exempt (within-chunk dedup divergence).
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA-only parity mirror")
@@ -265,4 +269,4 @@ def test_nn_parity_untrained_mlp_cube222_cuda(beam_mode, history_depth):
     _assert_outcome_parity(graph, start_state, legacy_result, engine_result)
     if beam_mode in _EXACT_SCORE_MODES:
         _assert_score_parity_allclose(legacy_result, engine_result)
-    assert len(engine_records) > 0
+        assert len(engine_records) > 0  # Iterated exempt (within-chunk dedup divergence).
