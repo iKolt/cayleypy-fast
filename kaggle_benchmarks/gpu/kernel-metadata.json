@@ -9,5 +9,9 @@
   "enable_internet": true,
   "dataset_sources": [],
   "kernel_sources": [],
-  "competition_sources": []
+  "competition_sources": [],
+  "model_sources": [
+    "fedimser/lrx-16/pyTorch/ep60/1",
+    "fedimser/lrx-32-by-mrnnnn/pyTorch/model_final/1"
+  ]
 }

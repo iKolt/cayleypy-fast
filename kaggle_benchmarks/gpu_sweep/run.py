@@ -129,9 +129,11 @@ for graph_name, (start_state, max_steps, ladder) in LADDERS.items():
         try:
             torch.cuda.synchronize()
             t0 = time.perf_counter()
+            # Cast (list) starts to graph.dtype: torch.as_tensor(list) is int64 and the
+            # whole search carries input dtype (int64 states at 2^26 beams OOM a P100).
             res = wrapped.beam_search(
-                start_state=start_state, beam_mode="iterated", beam_width=bw, max_steps=max_steps,
-                history_depth=2, return_path=False,
+                start_state=torch.as_tensor(start_state, dtype=graph.dtype), beam_mode="iterated",
+                beam_width=bw, max_steps=max_steps, history_depth=2, return_path=False,
             )
             torch.cuda.synchronize()
             total = time.perf_counter() - t0

@@ -119,6 +119,13 @@ def make_graph(name: str) -> CayleyGraph:
     raise ValueError(name)
 
 
+def cast_start(graph, start_state):
+    """Cast (list) start states to graph.dtype: torch.as_tensor(list) is int64, and the
+    engine/legacy carry the input dtype through the whole search — at bw=2^24 on
+    cube333 a (2^24, 54) int64 survivor batch is 6.75 GiB and OOMs a 16 GB P100."""
+    return torch.as_tensor(start_state, dtype=graph.dtype)
+
+
 def run_timed(beam_search_fn, start_state, beam_mode, hd, beam_width, max_steps, predictor=None,
               return_path=False, warmup=2, measured=3):
     """Time `measured` beam searches (cuda-synced bracketing); return (stats, last result)."""
@@ -158,6 +165,7 @@ def engine_backend(graph) -> str:
 def compare_row(name, graph, wrapped, start_state, mode, hd, bw, steps, predictor=None,
                 return_path=False, warmup=2, measured=3, nn_row=False):
     """Legacy vs engine in-process; hard path_found assert for hamming rows, record+warn for NN rows."""
+    start_state = cast_start(graph, start_state)
     legacy_stats, legacy_result = run_timed(
         graph.beam_search, start_state, mode, hd, bw, steps, predictor, return_path, warmup, measured
     )
@@ -202,6 +210,7 @@ def compare_row(name, graph, wrapped, start_state, mode, hd, bw, steps, predicto
 print("=== Stage 0: smoke ===", flush=True)
 _g0 = make_graph("lrx8")
 _w0 = cayleypy_fast.wrap(_g0)
+_LRX8_START = cast_start(_g0, _LRX8_START)
 assert engine_backend(_g0) == "triton", "Triton tier must engage on this runner (see gpu_sanity kernel)"
 _smoke_kwargs = dict(beam_mode="simple", beam_width=1000, max_steps=20, return_path=True)
 _r_legacy = _g0.beam_search(start_state=_LRX8_START, **_smoke_kwargs)
@@ -278,13 +287,13 @@ else:
     reset_mem()
     torch.cuda.synchronize()
     t0 = time.perf_counter()
-    e_res = wrapped.beam_search(start_state=_CUBE333_START, **_deep)
+    e_res = wrapped.beam_search(start_state=cast_start(graph, _CUBE333_START), **_deep)
     torch.cuda.synchronize()
     e_time = time.perf_counter() - t0
     e_peak = torch.cuda.max_memory_allocated() / 2**30
     reset_mem()
     t0 = time.perf_counter()
-    l_res = graph.beam_search(start_state=_CUBE333_START, **_deep)
+    l_res = graph.beam_search(start_state=cast_start(graph, _CUBE333_START), **_deep)
     torch.cuda.synchronize()
     l_time = time.perf_counter() - t0
     assert l_res.path_found == e_res.path_found, "cube333_deep: path_found mismatch"
@@ -381,11 +390,12 @@ for graph_name, start in (("cube333", _CUBE333_START), ("lrx32", _LRX32_START)):
     wrapped = cayleypy_fast.wrap(graph)
     name = f"{graph_name}_iterated_bw2p24"
     reset_mem()
+    pre_allocated = torch.cuda.memory_allocated() / 2**30
     try:
         torch.cuda.synchronize()
         t0 = time.perf_counter()
         res = wrapped.beam_search(
-            start_state=start, beam_mode="iterated", beam_width=2**24, max_steps=30,
+            start_state=cast_start(graph, start), beam_mode="iterated", beam_width=2**24, max_steps=30,
             history_depth=2, return_path=False,
         )
         torch.cuda.synchronize()
@@ -397,12 +407,20 @@ for graph_name, start in (("cube333", _CUBE333_START), ("lrx32", _LRX32_START)):
             "engine": {"time_sec": total, "path_found": res.path_found, "path_length": res.path_length,
                        "avg_step_sec": total / steps_run},
             "engine_peak_vram_gb": torch.cuda.max_memory_allocated() / 2**30,
+            "pre_row_allocated_gb": pre_allocated,
             "hash_backend": engine_backend(graph),
         }
         print(f"{name}: engine={total:.1f}s ({total/steps_run:.2f}s/step), found={res.path_found}", flush=True)
     except (RuntimeError, MemoryError) as exc:
-        results[name] = {"beam_width": 2**24, "legacy": "skipped_infeasible", "engine": f"error: {exc}"}
+        results[name] = {
+            "beam_width": 2**24,
+            "legacy": "skipped_infeasible",
+            "engine": f"error: {exc}",
+            "pre_row_allocated_gb": pre_allocated,
+            "memory_summary_tail": torch.cuda.memory_summary(abbreviated=True)[-3000:],
+        }
         print(f"{name}: engine row failed: {exc}", flush=True)
+        print(torch.cuda.memory_summary(abbreviated=True)[-2000:], flush=True)
     write_results()
     del graph, wrapped
     reset_mem()
