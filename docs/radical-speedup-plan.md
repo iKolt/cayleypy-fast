@@ -263,6 +263,78 @@ steps; post-cache they sit at 0.61-0.91× mean, i.e. ≤1ms absolute overhead).
 NN/custom scoring w/ running topk; tiny-MLP smoke test (trained in-test) on both
 devices; parity per T1 harness.
 
+**T5 parity+smoke DONE (@`79808f8`, CUDA-probe fixes @`356b201`–`d171fad`):**
+`tests/test_nn_parity.py` — trained-in-test tiny MLP (lrx8) + untrained seeded MLP
+(cube222), 4 modes × 2 devices. CPU: exact `debug_scores` + scored-candidate
+multiset parity for simple/advanced/iterated_batched; CUDA: outcome parity +
+allclose on common steps. Iterated keeps outcome-level asserts only (legacy
+iterated does NOT dedup within a per-generator chunk — verified at
+`beam_search.py:903` — while the engine's tile-level dedup does, so scored
+candidate counts legitimately diverge). CUDA mirrors cannot reuse fixed
+instances (torch RNG streams differ CPU vs CUDA — Philox), so they select
+device-native legacy-solvable nbt-walk instances by probing (`_find_solvable_start`;
+classic walks needed L/R-cancellation protection: classic random walks on LRX
+often simplify to distance <= 2 and never exercise scoring). Kaggle gpu-perf
+stage 0 runs the whole tier+NN suite in-clone on the P100: 40/40 green.
+
+**T3 DONE (@`79808f8` tier + tests, OOM fixes through @`33cae8b`; Kaggle P100
+sm_60, torch 2.5.1+cu121 / triton 3.1.0, cayleypy@`0b7e109`):** fixed-config
+(no autotune) broadcast-mul+`tl.sum`
+int64 hash kernel in `cayleypy_fast/triton_kernels.py`; engine ladder
+triton→matmul→mulsum resolved once per engine (`resolve_backend`, deterministic
+`torch.arange` probe bit-checked vs mulsum) + mid-search demotion with a
+RuntimeWarning + recompute. Sanity kernel: 5/5 shapes bit-equal on P100,
+~3.6× over the mulsum baseline micro. Engine vs legacy measured
+(`kaggle_benchmarks/gpu`, id `ivankolt/cayleypy-gpu-perf`):
+
+| Row | legacy | engine | speedup (mean) |
+|---|---|---|---|
+| lrx8 simple/advanced/iterated bw=1e5 | 13ms / 22ms / 53ms | 21ms / 15ms / 27ms | 0.63×\* / 1.42× / 1.98× |
+| cube333 simple/advanced/iterated bw=1e5 | 0.40s / 0.53s / 1.13s | 0.27s / 0.36s / 0.36s | 1.45× / 1.48× / 3.10× |
+| cube333 iterated bw=2^18 mitm=3 (deep) | 1.68s | 0.65s | 2.56× |
+| lrx16/lrx32 iterated bw=1e5, pretrained MLP | 21ms / 77ms | 14ms / 37ms | 1.53× / 2.09× |
+| cube333 iterated/simple bw=1e5, seeded MLP | 3.89s / 3.02s | 3.12s / 2.96s | 1.25× / 1.02× |
+| cube444 iterated/simple bw=1e5, seeded MLP | 10.87s / 8.72s | 8.91s / 8.56s | 1.23× / 1.02× |
+| cube333 iterated bw=2^24 (engine-only; legacy infeasible) | — | 48.6s, 1.68s/step, path found | — |
+| lrx32 iterated bw=2^24 (engine-only) | — | 0.1s, path found | — |
+
+\* lrx8/lrxNN "simple" rows are ms-scale searches (path found in ~16 steps before
+the beam fills); engine dispatch overhead dominates — same known pattern as the
+CPU micro rows. NN cube rows sit at 1.0–1.25× because streaming-scoring time is
+dominated by the NN forward, not hashing (T5 perf tuning stays deferred — the
+engine does not lose to legacy). All rows same `path_found`, hard `validate_path`
+asserts on NN rows, `nn_parity_diverged: false` everywhere.
+
+**T7-GPU sweep measured (`kaggle_benchmarks/gpu_sweep`, id
+`ivankolt/cayleypy-gpu-sweep`, engine-only iterated hd=2 ladders):**
+
+| Graph | Beams reached | Peak VRAM | Notes |
+|---|---|---|---|
+| cube333 | 2^20, 2^22 (0.15 s/step), 2^24 (0.56 s/step), 2^25 (1.17 s/step) | 13.2 GB | 2^26 OOM |
+| lrx32 | all rows through 2^28 | 0.29 GB | hamming-guided lrx beams stay small regardless of bw (already found ≤ 20 steps) |
+| cube555 | 2^22 (1.08 s/step) | 7.2 GB | 2^23 OOM |
+
+**Max-beam wall identified: candidate-hash sets.** At beam bw with G generators
+the live state per step is ≈ `bw·G·8B` (step torch-hash-set) + up to 2 further
+`bw·G·8B` for the two history-depth ban slots (+~10% transient tiles/sort):
+cube333 @2^26 needs 6.4 (step set) + 12.9 (two ban slots) + 3.6 (beam, int8)
++ ~1.5 (tiles/sort) ≈ 24 GB > 16 GB; cube555 @2^23 (G=24) ≈ 12.9 GB of sets
+alone. lrx32 (G=3) fits 2^28 easily.
+This is a *storage* wall, not a compute wall — options for a future task:
+hd=1 sweep rows (−1 slot), or a fused dedup/hash-table tier (plan §Stretch).
+
+**GPU bugs found & fixed en route:** (1) `torch.arange` probe/JIT during
+`resolve_backend` is per-(config,dtype) — warmup runs absorb it in all kernels.
+(2) **Input-dtype trap** (the big one): `CayleyGraph.encode_states` keeps the
+*input* dtype (`torch.as_tensor(states)` with no cast, `cayley_graph.py:143`),
+so a Python-list start state is int64; a (2^24, 54) int64 survivor batch is a
+single 6.75 GiB allocation → OOM on a 16 GB P100 at bw=2^24 cube333 even with
+chunked `_materialize`. Kernels now cast starts to `graph.dtype`
+(`kaggle_benchmarks/gpu/run.py` `cast_start`). Users with big beams should do
+the same. (3) `_materialize`'s `perms[gens]` gather index materialized
+(K, n) int64 wholesale → chunked under `_MATERIALIZE_CHUNK_BYTES`
+(bit-identical row-wise op; parity test with a monkeypatched tiny constant).
+
 **T6 — (optional, spike-gated) Encoded path.** Order: encode/decode one-launch
 kernels first (spike), then perm-apply, then splitmix64. Property tests incl.
 sign-bit configs. Fail gate → document as out of scope.

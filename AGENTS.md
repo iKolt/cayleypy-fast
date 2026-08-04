@@ -2,7 +2,7 @@
 
 Guidance for AI agents (and humans) working on the cayleypy-fast codebase.
 Read this before making any changes to the engine, the patch layer, or the
-benchmark kernels. Line anchors are stamped as of `c237ca6`; re-verify with
+benchmark kernels. Line anchors are stamped as of `33cae8b`; re-verify with
 grep before citing them in new docs.
 
 ## 1. Project at a glance
@@ -10,14 +10,14 @@ grep before citing them in new docs.
 cayleypy-fast is a **drop-in beam-search accelerator for cayleypy**: a separate
 pure-Python package (`py3-none-any` wheel, no native build step) that replaces
 the beam-search hot path with a chunked matmul-hash engine plus optional numba
-CPU tier. Zero changes to cayleypy core.
+(CPU) / Triton (GPU) tiers. Zero changes to cayleypy core.
 
 - **Activation**: `import cayleypy_fast; cayleypy_fast.enable()` patches
   `cayleypy.cayley_graph.BeamSearchAlgorithm` in place (guarded monkeypatch,
   probe-gated). Patch-averse alternative: `cayleypy_fast.wrap(graph)`. Pytest
   plugin: `pytest -p cayleypy_fast.pytest_plugin <host suite>`.
-- **Maturity**: working prototype, T0/T1/T2/T4 done (see §13). T3 Triton GPU
-  tier is next.
+- **Maturity**: working prototype — CPU: T0/T1/T2/T4 done; GPU: T3 Triton tier,
+  T5 parity+smoke, T7-GPU benchmarks done on Kaggle P100 (see §13).
 - **Upstream pin**: developed and parity-tested against cayleypy @ `0b7e109`
   (editable install from the sibling checkout `C:\Users\xiaomi\cayleypy`).
 - **License:** MIT.
@@ -32,7 +32,7 @@ from upgrading torch to satisfy cayleypy's `torch>=2.6` metadata).
 
 ```powershell
 pip install -e .[lint,test,numba]     # dev install
-pytest                                # 118 tests, 6 files, offline
+pytest                                # 162 tests, 8 files, offline (21 CUDA-gated skips on CPU)
 bash lint.sh                          # black --check + pylint + mypy (PR gate)
 
 # Run the UPSTREAM cayleypy suite with the engine active (in-process enable):
@@ -46,7 +46,7 @@ Measured upstream suite timings at cayleypy@0b7e109 with the patch enabled:
 dots arrive only at process exit. Measure with in-script `time.perf_counter()`
 or tail a log file, never by watching the dots.
 
-## 3. Repository map (as of c237ca6)
+## 3. Repository map (as of 33cae8b)
 
 ```
 cayleypy_fast/
@@ -55,29 +55,40 @@ cayleypy_fast/
   _probe.py            # Compatibility probe against the live cayleypy internals
   engine.py            # FastBeamEngine: chunked matmul-hash beam engine (all 4 modes)
   numba_kernels.py     # Optional numba CPU tier for the dual-int32 hash primitive
+  triton_kernels.py    # Optional Triton GPU tier for the int64 hash (broadcast-mul + tl.sum)
   pytest_plugin.py     # In-process enable() for host test suites
-tests/                 # 118 tests: delegation, enable, engine_parity, hash_parity, numba_tier, probe
+tests/                 # 162 tests: delegation, enable, engine_parity, hash_parity, numba_tier, probe, triton_tier, nn_parity
 docs/radical-speedup-plan.md   # Design doc + measured T2/T4 benchmark tables
-kaggle_benchmarks/     # 5 Kaggle CPU kernels: cpu, cpu_heavy, cpu_deep, cpu_sweep, cpu_micro
+kaggle_benchmarks/     # 8 Kaggle kernels: 5 CPU (cpu, cpu_heavy, cpu_deep, cpu_sweep, cpu_micro) + 3 GPU (gpu_sanity, gpu, gpu_sweep)
 kaggle_out/            # Downloaded kernel logs + result JSONs (gitignored)
 conftest.py            # Deterministic seeding (DETERMINISTIC_SEED = 12345)
 lint.sh                # black 120 + pylint + mypy
 ```
 
-### Code anchors (grep-verified at c237ca6)
+### Code anchors (grep-verified at 33cae8b)
 
 | `engine.py` | Line | Role |
 |---|---|---|
-| `class PermutedHashVectors` | 112 | Permuted hash vector table `VH[j, g] = v[p_g^-1[j]]` |
-| `build_permuted_hash_vectors` | 145 | Builds VH from the live `graph.hasher` |
-| `hash_neighbors_tiled` | 170 | Tiled neighbor hashing; dispatches CPU dual-int32 to numba |
-| `engine_available` | 200 | Gate: permutation group + dot-product hasher + probe |
-| `class _GlobalTopK` | 210 | Running global topk (simple/advanced) |
-| `class _PerGenTopK` | 292 | Per-generator running topk (iterated modes) |
-| `class _BatchedRedistribute` | 323 | Legacy surplus redistribution (iterated_batched) |
-| `class FastBeamEngine` | 388 | The engine; `_hash_tile_flat`:442, `_tile_candidates`:451, `_apply_cumulative_ban`:479, `_apply_window_ban`:488, `_make_score_fn`:500, `_materialize`:542, `_run`:560 |
-| `search_simple/advanced/iterated/iterated_batched` | 750/781/812/843 | Forked mode methods |
-| `create_engine` + per-graph cache | 906 | WeakKeyDictionary-keyed engine cache |
+| `class PermutedHashVectors` | 115 | Permuted hash vector table `VH[j, g] = v[p_g^-1[j]]` (+ `backend` slot for the CUDA ladder) |
+| `build_permuted_hash_vectors` | 158 | Builds VH from the live `graph.hasher` |
+| `hash_neighbors_mulsum` | 191 | Rung-3 int64 fallback (never materializes neighbors) |
+| `_hash_int64_dispatch` | 220 | CUDA int64 dispatch with mid-search demotion (warn once, recompute) |
+| `resolve_backend` | 251 | Once-per-engine ladder resolution: triton → matmul → mulsum probe (bit-checked vs mulsum) |
+| `hash_neighbors_tiled` | 297 | Tiled neighbor hashing; CPU dual-int32 → numba, CUDA int64 → ladder |
+| `engine_available` | 330 | Gate: permutation group + dot-product hasher + probe |
+| `class _GlobalTopK` | 340 | Running global topk (simple/advanced) |
+| `class _PerGenTopK` | 422 | Per-generator running topk (iterated modes) |
+| `class _BatchedRedistribute` | 453 | Legacy surplus redistribution (iterated_batched) |
+| `class FastBeamEngine` | 518 | The engine; `_hash_tile_flat`:575, `_tile_candidates`:584, `_apply_cumulative_ban`:612, `_apply_window_ban`:621, `_make_score_fn`:633, `_materialize`:681 (chunked), `_run`:693 |
+| `search_simple/advanced/iterated/iterated_batched` | 883/914/945/976 | Forked mode methods |
+| `create_engine` + per-graph cache | 1039 | WeakKeyDictionary-keyed engine cache |
+
+| `triton_kernels.py` | Line | Role |
+|---|---|---|
+| `_ENV_DISABLE` | 47 | `CAYLEYPY_FAST_TRITON_DISABLE` kill-switch |
+| `triton_available` | 112 | Optional-import gate |
+| `_pick_config` | 119 | Fixed config table by (rows, G); no autotune |
+| `hash_neighbors_int64_triton` | 142 | Fused int64 hash kernel wrapper (broadcast-mul + tl.sum) |
 
 | `_patch.py` | Line | Role |
 |---|---|---|
@@ -125,7 +136,11 @@ Key insight: for permutation groups with the dot-product hasher,
 matmul against precomputed VH. VH is derived **from the live
 `graph.hasher` instance** (never regenerated) ⇒ chunk hashes bit-match
 `hasher.make_hashes`. On CPU the hashers dual-int32 path is dispatched to the
-numba kernel inside `hash_neighbors_tiled`.
+numba kernel inside `hash_neighbors_tiled`. On CUDA the int64 path dispatches
+through a per-engine backend ladder resolved by `resolve_backend`:
+triton (probe-compiled + bit-checked) → torch matmul (mirrors the hasher's own
+try/except) → mulsum (per-generator multiply+sum, bit-equal floor), with
+mid-search demotion (warn once, demote, recompute — search never aborts).
 
 ## 5. Upstream contract snapshot (pinned cayleypy @ 0b7e109)
 
@@ -142,6 +157,11 @@ peripheral upstream detail — BFS internals, datasets, model registry — see
 - **`_restore_path` takes `destination_state`** (fix A1,
   `beam_search.py:89`): when `found_layer_id == 0` the path is restored to
   `destination_state`, not `central_state`.
+- **`encode_states` preserves the INPUT dtype** (`cayley_graph.py:143`,
+  `torch.as_tensor(states)` with no cast): a Python-list start state enters the
+  whole search as int64 EVEN IF the graph was built with `dtype=torch.int8`.
+  Both legacy and the engine carry it through; hashes are unaffected (values
+  are small), but state tensors cost 8× memory (see the dtype trap in §7).
 - **The 6 BeamSearchResult invariants** (from cayleypy/AGENTS.md §6, verbatim):
   1. `graph.apply_path(start_state, path)` equals `graph.central_state` (or `destination_state` if specified).
   2. `len(path) == path_length` (enforced by `BeamSearchResult.__post_init__`).
@@ -211,7 +231,30 @@ peripheral upstream detail — BFS internals, datasets, model registry — see
   where setup dominates. The parity fixture forces `"0"`/`"0"`
   (`tests/test_engine_parity.py:36-37`) to exercise the engine everywhere.
 - **Kill switches**: `CAYLEYPY_FAST_DISABLE=1` (enable() no-op),
-  `CAYLEYPY_FAST_NUMBA_DISABLE=1` (numba tier off, torch fallback).
+  `CAYLEYPY_FAST_NUMBA_DISABLE=1` (numba tier off, torch fallback),
+  `CAYLEYPY_FAST_TRITON_DISABLE=1` (triton tier off, ladder demotes at resolve).
+- **int64-state dtype trap** (@`33cae8b`, Kaggle P100 OOM): list start states
+  search as int64 end-to-end (see §5); at bw=2^24 cube333 the (2^24×54) int64
+  survivor batch is a single 6.75 GiB alloc on a 16 GB GPU. Fix convention in
+  the GPU kernels: cast starts to `graph.dtype`; the engine itself must stay
+  dtype-faithful to legacy (drop-in parity promise).
+- **_materialize gather index is (K, n) int64** (@`ae3989f`): `perms[gens]` on
+  the full survivor batch was multi-GB at 2^24+ beams; now chunked under
+  `_MATERIALIZE_CHUNK_BYTES` (bit-identical, parity test monkeypatches the
+  constant tiny).
+- **Legacy `iterated` has NO within-chunk dedup** (verified
+  `beam_search.py:903`): it dedups later generators' chunks only against the
+  post-topk survivors of earlier generators; the engine's tile-level dedup is
+  strictly stronger. Consequence: NN `debug_scores`-level parity is legal for
+  simple/advanced/iterated_batched only — iterated keeps outcome parity.
+- **CUDA test RNG ≠ CPU test RNG** (Philox): fixed-instance parity tests must
+  either tune instances per device or probe-select them
+  (`test_nn_parity._find_solvable_start` — nbt walks, classic walks on LRX
+  collapse via inverse generators to distance ≤ 2).
+- **GPU max-beam wall = candidate-hash storage** (T7-GPU sweep): live memory
+  per step ≈ 3 × `bw·G·8B` (step dedup set + hd=2 ban slots) + beam + ~1.5 GB
+  tiles/sort. cube333 caps at 2^25, cube555 at 2^22, lrx32 untested-ceiling
+  (2^28, beams stay small under hamming). See the design doc T7 section.
 
 ## 8. Measured benchmarks
 
@@ -240,6 +283,22 @@ compare `min`. Parity: all parity harnesses green (see §10).
 
 Reproduce: push the 5 kernels (§11), download outputs, read the
 `cpu_bench*_result.json` files.
+
+### GPU (Kaggle P100, torch 2.5.1+cu121, cayleypy@0b7e109, engine in `ae3989f`)
+
+| Kernel | Row | legacy | engine | speedup |
+|---|---|---|---|---|
+| gpu | lrx8 simple/advanced/iterated bw=1e5 | 13/22/53 ms | 21/15/27 ms | 0.63×(ms row) / 1.42× / 1.98× |
+| gpu | cube333 simple/advanced/iterated bw=1e5 | 0.40/0.53/1.13 s | 0.27/0.36/0.36 s | 1.45× / 1.48× / **3.10×** |
+| gpu | cube333 iterated bw=2^18 mitm=3 | 1.68 s | 0.65 s | **2.56×** |
+| gpu | lrx16/lrx32 iterated bw=1e5, pretrained MLP | 21/77 ms | 14/37 ms | 1.53× / 2.09× |
+| gpu | cube333/cube444 NN rows bw=1e5 | 3.9–10.9 s | 3.0–8.9 s | 1.02–1.25× (NN-forward dominated) |
+| gpu | cube333 iterated bw=2^24 (engine-only) | infeasible | 48.6 s, **1.68 s/step**, found | — |
+| gpu_sweep | cube333 / lrx32 / cube555 max beam (iterated hd=2) | — | 2^25 / 2^28 / 2^22 | wall: candidate-hash sets ≈3×bw·G·8B |
+
+Sanity kernel (`gpu_sanity`): 5/5 shape bit-equality for the Triton kernel on
+P100, ~3.6× over the mulsum micro baseline; clone-side pytest of
+test_triton_tier+test_nn_parity inside the perf kernel: 40/40 green.
 
 ## 9. Contribution rules
 
@@ -275,18 +334,25 @@ Reproduce: push the 5 kernels (§11), download outputs, read the
   `{"username":"ivanKolt","key":"KGAT_..."}`. The kaggle CLI v2.x does NOT
   read `kaggle.json` — export the key:
   `$env:KAGGLE_API_TOKEN="KGAT_..."` (PowerShell).
-- **Cycle** (~40–60 min per push → queue → run → download on CPU kernels):
+- **Cycle** (GPU kernels run ~5–15 min; CPU kernels ~40–60 min per push → queue
+  → run → download):
   ```powershell
   kaggle kernels push -p kaggle_benchmarks/cpu          # or any other kernel dir
   kaggle kernels status ivankolt/cayleypy-cpu-bench
-  # Download ONLY via the Python API (the `kaggle kernels output` CLI has a
-  # Windows charmap bug when logs contain non-ASCII):
-  python -c "from kaggle import KaggleApi; api=KaggleApi(); api.authenticate(); api.kernels_output('ivankolt/cayleypy-cpu-bench', path='./kaggle_out/cpu_bench_v3', force=True, quiet=True)"
+  # Download ONLY via the Python API (the `kaggle kernels output` CLI AND the
+  # plain API hit a Windows charmap bug when logs contain non-ASCII — use
+  # PYTHONUTF8 + -X utf8):
+  $env:PYTHONUTF8='1'
+  python -X utf8 -c "from kaggle import KaggleApi; api=KaggleApi(); api.authenticate(); api.kernels_output('ivankolt/cayleypy-gpu-perf', path='./kaggle_out/gpu_perf_v9', force=True, quiet=True)"
   ```
+- **Pretrained model weights need `model_sources`**: kagglehub's cache resolver
+  cannot attach un-attached models in non-interactive sessions (BackendError
+  code 9). The gpu kernel attaches `fedimser/lrx-16/pyTorch/ep60/1` and
+  `fedimser/lrx-32-by-mrnnnn/pyTorch/model_final/1` in `kernel-metadata.json`.
 - **Parallel-5 rule:** up to 5 kernels run in parallel on a free account —
   push all 5 at once.
-- **Bump `_CAYLEYPY_FAST_REF` consistently across ALL 5 run.py files** when
-  re-measuring (currently `0732d801addce60d0d2eafeb6efe51aa5b5c61f7`).
+- **Bump `_CAYLEYPY_FAST_REF` consistently across ALL kernel run.py files** when
+  re-measuring (GPU kernels currently `ae3989f5f53cb371d5efdda5dc719462d8a466db`).
   Kernels install `git+https://github.com/iKolt/cayleypy-fast.git@<ref>`.
 
 | Kernel id | Dir | Matrix / intent | Result file (kaggle_out/) |
@@ -302,11 +368,17 @@ Reproduce: push the 5 kernels (§11), download outputs, read the
 - **GPU kernels:** the immutable baseline lives in the **cayleypy repo**
   (`kaggle_benchmarks/baseline`, id `ivankolt/cayleypy-gpu-baseline`, installs
   cayleypy pinned @`4ba6b04`). The perf GPU kernel (id
-  `ivankolt/cayleypy-gpu-perf`, SHA TBD) belongs to **cayleypy-fast** (per the
+  `ivankolt/cayleypy-gpu-perf`) belongs to **cayleypy-fast** (per the
   cayleypy AGENTS.md §10 two-kernel sync rule: copy + change install SHA and
   kernel id only). Kaggle allocates Tesla P100 (sm_60) → pin
   `torch==2.5.1+cu121` (default Kaggle torch crashes with
   `cudaErrorNoKernelImageForDevice`).
+
+| GPU kernel id | Dir | Intent | Result (kaggle_out/) |
+|---|---|---|---|
+| `ivankolt/cayleypy-gpu-sanity` | `gpu_sanity/` | Triton kernel bit-equality micro (5 shapes, dtypes) | `gpu_sanity{,_v2}/gpu_sanity_result.json` |
+| `ivankolt/cayleypy-gpu-perf` | `gpu/` | 4-stage perf: smoke+clone-pytest → quick mirror → deep + NN rows → bw=2^24 engine-only | `gpu_perf_v{3..9}/gpu_perf_result.json` |
+| `ivankolt/cayleypy-gpu-sweep` | `gpu_sweep/` | Engine-only max-beam ladders 2^20…2^28 (cube333/lrx32/cube555) | `gpu_sweep_v1/gpu_sweep_result.json` |
 
 ## 12. Windows/PowerShell pitfalls
 
@@ -329,10 +401,12 @@ Cross-ref: `docs/radical-speedup-plan.md` (full design + risk matrix).
 | T1 baseline & characterization (bit-equality property tests, parity harness) | DONE |
 | T2 torch engine, 4 modes, hamming (measured table in design doc) | DONE @`45c5985` |
 | T4 numba tier (13–39× hash kernel, bit-equal, 17 tests) | DONE @`0732d80` |
-| T3 Triton GPU tier | TODO — needs the Kaggle GPU baseline/perf kernel pair |
-| T5 hybrid NN predictors streaming scoring | TODO |
+| T3 Triton GPU tier (ladder + demotion, 24 tier tests, Kaggle P100 validated) | DONE @`79808f8` (+OOM fixes @`ae3989f`/`33cae8b`) |
+| T5 parity+smoke NN tests (trained lrx8 + untrained cube222, 4 modes × CPU/CUDA) | DONE @`79808f8` (+probe fixes @`356b201`–`d171fad`) |
+| T5 NN *perf* tuning (separate task) | NOT DONE — deferred; engine ≥1.0× legacy on NN rows (NN-forward dominated) |
 | T6 encoded-state path (spike-gated, low priority) | TODO |
-| T7 scaling sweep 2^20…2^28 + GPU before/after + docs refresh | TODO |
+| T7-GPU scaling sweep + GPU benchmarks + docs refresh | DONE @`33cae8b` (cubes capped 2^25/2^22 by candidate-hash sets; lrx32 2^28) |
+| T7 remaining | candidate-hash memory redesign only if bigger GPU beams wanted |
 
 ## 14. Where's what
 
