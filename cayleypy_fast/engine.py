@@ -44,6 +44,7 @@ reproduces this byte-for-byte for parity.
 
 import contextlib
 import time
+import warnings
 import weakref
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -80,7 +81,9 @@ __all__ = [
     "build_permuted_hash_vectors",
     "create_engine",
     "engine_available",
+    "hash_neighbors_mulsum",
     "hash_neighbors_tiled",
+    "resolve_backend",
 ]
 
 _MODES = ("simple", "advanced", "iterated", "iterated_batched")
@@ -115,15 +118,25 @@ class PermutedHashVectors:
     ``vh`` has shape ``(state_size, n_generators)`` int64 for the int64 hasher
     path, or ``(state_size, 2 * n_generators)`` int32 for the CPU dual-int32
     path (two int32 hashes per generator, combined via ``.view(torch.int64)``).
+
+    ``backend`` selects the int64 (CUDA) hash rung: ``"triton" | "matmul" |
+    "mulsum"``; ``None`` means "default" (torch matmul) and is also the value
+    for dual-int32 CPU instances, whose numba/torch dispatch is backend-
+    independent. All int64 rungs are bit-equal by construction (int64 mul/add
+    wrap mod 2^64), so mid-search demotion cannot change search semantics.
     """
 
-    __slots__ = ("vh", "dual_int32", "_numba_vh_t")
+    __slots__ = ("vh", "dual_int32", "_numba_vh_t", "backend", "_triton_vh_t")
 
     def __init__(self, vh: torch.Tensor, dual_int32: bool) -> None:
         self.vh = vh
         self.dual_int32 = dual_int32
         # Lazily built (n, 2*G)-transposed numpy copy for the optional numba tier.
         self._numba_vh_t: Optional[np.ndarray] = None
+        # int64 hash backend (see class docstring); resolved once per engine.
+        self.backend: Optional[str] = None
+        # Lazily built (G, n)-transposed contiguous CUDA tensor for the Triton tier.
+        self._triton_vh_t: Optional[torch.Tensor] = None
 
 
 def _permute_vector(v: torch.Tensor, inv_perms: torch.Tensor, dual_int32: bool) -> torch.Tensor:
@@ -167,6 +180,120 @@ def build_permuted_hash_vectors(graph: "CayleyGraph") -> Optional[PermutedHashVe
     return None
 
 
+# -----------------------------------------------------------------------------
+# int64 (CUDA) hash backend ladder (plan, "hash backend ladder").
+# -----------------------------------------------------------------------------
+
+# Demotion order for mid-search failures: triton -> matmul -> mulsum (floor).
+_DEMOTE_NEXT = {"triton": "matmul", "matmul": "mulsum"}
+
+
+def hash_neighbors_mulsum(hv: PermutedHashVectors, states: torch.Tensor) -> torch.Tensor:
+    """Rung-3 int64 fallback: per-generator multiply+sum (no integer GEMM needed).
+
+    Mirrors the hasher's "older GPU" path (``sum(states * v)``) one generator at
+    a time; the per-generator temp is bounded by ``B x n`` int64 (B is already
+    capped by ``FastBeamEngine._HASH_SUBTILE_ROWS``). Bit-equal to the matmul
+    rung: int64 mul/add wrap mod 2^64 regardless of summation order.
+    """
+    assert not hv.dual_int32, "mulsum fallback is for the int64 path only"
+    s64 = states.to(torch.int64)
+    n_generators = hv.vh.shape[1]
+    out = torch.empty((states.shape[0], n_generators), dtype=torch.int64, device=s64.device)
+    for g in range(n_generators):
+        out[:, g] = (s64 * hv.vh[:, g]).sum(dim=1)
+    return out
+
+
+def _hash_via_matmul(hv: PermutedHashVectors, states: torch.Tensor) -> torch.Tensor:
+    """Rung-2 int64 path: one torch matmul. Wraps mod 2^64; needs integer GEMM support."""
+    return states.to(torch.int64) @ hv.vh  # (B, G) int64
+
+
+def _hash_via_triton(hv: PermutedHashVectors, states: torch.Tensor) -> torch.Tensor:
+    """Rung-1 int64 path: the Triton kernel (see triton_kernels.py)."""
+    from .triton_kernels import hash_neighbors_int64_triton  # pylint: disable=import-outside-toplevel
+
+    return hash_neighbors_int64_triton(hv, states)
+
+
+def _hash_int64_dispatch(hv: PermutedHashVectors, states: torch.Tensor) -> torch.Tensor:
+    """Dispatch the int64 hash via ``hv.backend`` with mid-search demotion.
+
+    A runtime failure on the triton or matmul rung warns once (the backend is
+    mutated, so it cannot fail twice), demotes to the next rung, and recomputes
+    the failed subtile — hashing is a pure function of the inputs and all rungs
+    are bit-equal, so demotion never changes search semantics.
+    """
+    while True:
+        backend = hv.backend
+        try:
+            if backend == "triton":
+                return _hash_via_triton(hv, states)
+            if backend == "mulsum":
+                return hash_neighbors_mulsum(hv, states)
+            return _hash_via_matmul(hv, states)  # None (unresolved/CPU) or "matmul".
+        # Deliberate broad catch: demote and recompute, never abort a running search.
+        # pylint: disable=broad-exception-caught
+        except Exception as exc:
+            nxt = _DEMOTE_NEXT.get(backend if backend is not None else "matmul")
+            if nxt is None:
+                raise
+            warnings.warn(
+                f"cayleypy-fast: hash backend '{backend or 'matmul'}' failed mid-search "
+                f"({type(exc).__name__}: {exc}); demoting to '{nxt}'.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            hv.backend = nxt
+
+
+def resolve_backend(hv: PermutedHashVectors) -> None:
+    """Resolve ``hv.backend`` once per engine (int64 CUDA instances only).
+
+    Ladder: triton (kernel probe-compiled and bit-checked against the mul+sum
+    reference) -> matmul (mirrors the hasher's own try/except, hasher.py) ->
+    mulsum (hasher-mirrored floor, bit-equal by construction). No-op for the
+    CPU dual-int32 path (numba/torch dispatch there is untouched) and for CPU
+    int64 instances (matmul works there; ``None`` keeps the historical path).
+    """
+    if hv.dual_int32 or not hv.vh.is_cuda:
+        hv.backend = None
+        return
+    from .triton_kernels import triton_available  # pylint: disable=import-outside-toplevel
+
+    device = hv.vh.device
+    n = hv.vh.shape[0]
+    # Deterministic probe inputs (values < n, like real permutation states), in
+    # both dtypes the kernel casts from. No global RNG consumed.
+    probes = []
+    base = torch.arange(8 * n, device=device, dtype=torch.int64).reshape(8, n) % max(n, 1)
+    probes.append(base)
+    if n <= 127:
+        probes.append(base.to(torch.int8))
+    reference = [hash_neighbors_mulsum(hv, p) for p in probes]
+    if triton_available():
+        try:
+            for p, ref in zip(probes, reference):
+                if not torch.equal(_hash_via_triton(hv, p), ref):
+                    raise RuntimeError("triton probe bit-mismatch vs mul+sum reference")
+            hv.backend = "triton"
+            return
+        # Probe failure falls through to the next rung (any exception type).
+        except Exception:  # pylint: disable=broad-exception-caught
+            pass
+    try:
+        for p, ref in zip(probes, reference):
+            if not torch.equal(_hash_via_matmul(hv, p), ref):
+                raise RuntimeError("matmul probe bit-mismatch vs mul+sum reference")
+        hv.backend = "matmul"
+        return
+    # e.g. no integer GEMM on this GPU (hasher.py try/excepts likewise).
+    except Exception:  # pylint: disable=broad-exception-caught
+        pass
+    hv.backend = "mulsum"
+
+
 def hash_neighbors_tiled(hv: PermutedHashVectors, states: torch.Tensor) -> torch.Tensor:
     """Hash all ``B x G`` neighbors of ``states`` without materializing them.
 
@@ -178,7 +305,10 @@ def hash_neighbors_tiled(hv: PermutedHashVectors, states: torch.Tensor) -> torch
 
     Dispatch: the optional numba tier (T4) handles the CPU dual-int32 case
     (13-39x faster than torch's non-BLAS int32 matmul; bit-equal), torch
-    otherwise. ``CAYLEYPY_FAST_NUMBA_DISABLE=1`` forces torch.
+    otherwise. ``CAYLEYPY_FAST_NUMBA_DISABLE=1`` forces torch. The int64
+    (CUDA) case dispatches through the ``hv.backend`` ladder resolved by
+    :func:`resolve_backend` (triton -> matmul -> mulsum, mid-search demotion
+    on runtime failure).
     """
     if hv.dual_int32:
         try:
@@ -194,7 +324,7 @@ def hash_neighbors_tiled(hv: PermutedHashVectors, states: torch.Tensor) -> torch
         h32 = states.to(torch.int32) @ hv.vh  # (B, 2G) int32; wraps mod 2^32 per element.
         n_generators = hv.vh.shape[1] // 2
         return h32.view(-1, n_generators, 2).view(torch.int64).reshape(-1, n_generators)
-    return states.to(torch.int64) @ hv.vh  # (B, G) int64; wraps mod 2^64.
+    return _hash_int64_dispatch(hv, states)
 
 
 def engine_available(graph: "CayleyGraph") -> bool:
@@ -421,6 +551,9 @@ class FastBeamEngine:
         # never materialized for scoring. Replicates the legacy quirk of always
         # measuring distance to central_state (TODO(char-spec) upstream).
         self.central_by_gen = central_enc[self.inv_perms].contiguous()  # (G, n), graph dtype
+        # Resolve the int64 (CUDA) hash backend ladder once per engine (engines
+        # are cached per graph, so probes/JIT compile never hit the hot path).
+        resolve_backend(hv)
         self.tile_states = self._choose_tile_states()
 
     # -- Precompute ------------------------------------------------------

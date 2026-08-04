@@ -37,14 +37,17 @@ _DISABLED_VALUES = {"1", "true", "yes", "on"}
 try:
     from numba import njit, prange
 except ImportError:  # pragma: no cover - numba is optional
-    njit = None  # type: ignore[assignment]
-    prange = None  # type: ignore[assignment]
+    njit = None  # type: ignore[assignment,misc]
+    prange = None  # type: ignore[assignment,misc]
 
+# Module-level handle assigned conditionally below (see if-block).
+# pylint: disable=invalid-name
 _NUMBA_KERNEL_DUAL_I32 = None
 
 if njit is not None:
 
     @njit(parallel=True, cache=True)
+    # mypy: prange is numba's special iteration builtin, not visible to static analysis.
     def _hash_neighbors_dual_int32_np(states: np.ndarray, vh_t: np.ndarray, out: np.ndarray) -> None:
         """``out[i, c] = sum_j int32(states[i, j]) * vh_t[c, j]`` with mod-2^32 wraparound.
 
@@ -57,8 +60,8 @@ if njit is not None:
         rows = states.shape[0]
         cols = vh_t.shape[0]
         n = states.shape[1]
-        # Numba types prange via its own typing pass; pylint sees None and cannot infer iterability.
-        for i in prange(rows):  # pylint: disable=not-an-iterable
+        # Numba types prange via its own typing pass; pylint/mypy see None and cannot infer iterability.
+        for i in prange(rows):  # type: ignore[attr-defined]  # pylint: disable=not-an-iterable
             for c in range(cols):
                 acc = np.int32(0)
                 for j in range(n):
