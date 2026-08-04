@@ -39,10 +39,16 @@ def _int64_hv(graph: CayleyGraph) -> PermutedHashVectors:
     inv_perms = torch.argsort(graph.permutations_torch, dim=1)
     n = inv_perms.shape[1]
     torch.manual_seed(7)
-    v64 = torch.randint(-(2**62), 2**62, (n,), dtype=torch.int64)
+    v64 = torch.randint(-(2**62), 2**62, (n,), dtype=torch.int64, device=graph.device)
     from cayleypy_fast.engine import _permute_vector  # pylint: disable=import-outside-toplevel
 
     return PermutedHashVectors(_permute_vector(v64, inv_perms, dual_int32=False), dual_int32=False)
+
+
+def _cpu_graph(name: str) -> CayleyGraph:
+    """CPU-forced graph: the *_cpu tests must stay hermetic even on GPU runners
+    (device defaults to 'auto')."""
+    return CayleyGraph(MINIGRAPH_FACTORIES[name](), random_seed=42, device="cpu")
 
 
 # -----------------------------------------------------------------------------
@@ -54,7 +60,7 @@ def _int64_hv(graph: CayleyGraph) -> PermutedHashVectors:
 @pytest.mark.parametrize("dtype", [torch.int8, torch.int64])
 def test_mulsum_bitmatch_matmul_cpu(graph_name, dtype):
     """The mul+sum floor rung is bit-equal to torch int64 matmul (graph-realistic shapes)."""
-    graph = CayleyGraph(MINIGRAPH_FACTORIES[graph_name](), random_seed=42)
+    graph = _cpu_graph(graph_name)
     hv = _int64_hv(graph)
     assert not hv.dual_int32
     states, _ = graph.random_walks(width=256, length=8)
@@ -83,7 +89,7 @@ def test_mulsum_zero_rows_cpu():
 
 def test_resolve_backend_noop_on_cpu():
     """CPU instances keep backend=None (dual-int32 numba/torch dispatch untouched)."""
-    graph = CayleyGraph(PermutationGroups.lrx(8), random_seed=42)
+    graph = _cpu_graph("lrx8")
     hv = build_permuted_hash_vectors(graph)
     assert hv is not None and hv.dual_int32
     resolve_backend(hv)
@@ -96,7 +102,7 @@ def test_resolve_backend_noop_on_cpu():
 
 def test_matmul_failure_demotes_to_mulsum_cpu(monkeypatch):
     """A matmul-rung runtime failure warns once, demotes to mulsum, and recomputes."""
-    graph = CayleyGraph(PermutationGroups.lrx(8), random_seed=42)
+    graph = _cpu_graph("lrx8")
     hv = _int64_hv(graph)
     states = torch.randint(0, 8, (17, 8), dtype=torch.int8)
     reference = hash_neighbors_mulsum(hv, states)
@@ -121,7 +127,7 @@ def test_matmul_failure_demotes_to_mulsum_cpu(monkeypatch):
 
 def test_triton_failure_demotes_then_bitmatch_cpu(monkeypatch):
     """Simulated triton-rung failure (no GPU needed): demote to matmul, recompute, bit-equal."""
-    graph = CayleyGraph(PermutationGroups.lrx(8), random_seed=42)
+    graph = _cpu_graph("lrx8")
     hv = _int64_hv(graph)
     states = torch.randint(0, 8, (17, 8), dtype=torch.int8)
     reference = states.to(torch.int64) @ hv.vh

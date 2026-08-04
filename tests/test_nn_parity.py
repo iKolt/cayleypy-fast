@@ -176,7 +176,9 @@ def test_nn_parity_trained_mlp_lrx8(beam_mode, history_depth):
 @pytest.mark.parametrize("beam_mode,history_depth", _MODES_HD)
 def test_nn_parity_untrained_mlp_cube222(beam_mode, history_depth):
     """Untrained seeded MLP on cube222: a second predictor shape (multi-class one-hot)."""
-    graph = CayleyGraph(prepare_graph("cube_2/2/2_6gensQTM"), random_seed=42)
+    # device="cpu" is NOT optional: on GPU runners device="auto" would silently
+    # pick CUDA, and the exact-fp asserts below are legal on CPU only.
+    graph = CayleyGraph(prepare_graph("cube_2/2/2_6gensQTM"), random_seed=42, device="cpu")
     recorder = _RecordingModel(_seeded_mlp_for(graph))
     # length-17 walk at bw=1024: all 4 modes find (len 6) AFTER scoring begins,
     # so the streaming NN path is exercised on the found path (shorter walks
