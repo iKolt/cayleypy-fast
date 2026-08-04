@@ -162,6 +162,31 @@ _MODES_HD = [("simple", 0), ("advanced", 2), ("iterated", 2), ("iterated_batched
 _EXACT_SCORE_MODES = {"simple", "advanced", "iterated_batched"}
 
 
+def _find_solvable_start(graph: CayleyGraph, recorder, beam_mode: str, beam_width: int, history_depth: int):
+    """First legacy-solvable random-walk start at increasing lengths (deterministic per device).
+
+    CUDA mirrors cannot reuse the CPU tests' fixed instances: torch's RNG streams
+    differ between CPU and CUDA (Philox), so the same "walk length N on the graph"
+    yields a different - and sometimes unsolvable - start state. Probing LEGACY at
+    the test's own mode/beam keeps the instance device-native while guaranteeing
+    legacy solvability by construction (the parity asserts then stay strict).
+    Returns (start_state, legacy_probe_result).
+    """
+    for length in range(3, 13):
+        start_state = graph.random_walks(width=1, length=length)[0][-1]
+        probe = graph.beam_search(
+            start_state=start_state,
+            beam_mode=beam_mode,
+            predictor=recorder,
+            beam_width=beam_width,
+            max_steps=30,
+            history_depth=history_depth,
+        )
+        if probe.path_found:
+            return start_state
+    raise AssertionError(f"no legacy-solvable walk found in 10 tries ({beam_mode})")
+
+
 @pytest.mark.parametrize("beam_mode,history_depth", _MODES_HD)
 def test_nn_parity_trained_mlp_lrx8(beam_mode, history_depth):
     """Trained tiny MLP on lrx8: legacy vs engine parity on CPU (exact scores where legal)."""
@@ -211,7 +236,7 @@ def test_nn_parity_untrained_mlp_cube222(beam_mode, history_depth):
 def test_nn_parity_trained_mlp_lrx8_cuda(beam_mode, history_depth):
     graph, model = _train_tiny_mlp_lrx8(device="cuda")
     recorder = _RecordingModel(model)
-    start_state = graph.random_walks(width=1, length=41)[0][-1]
+    start_state = _find_solvable_start(graph, recorder, beam_mode, beam_width=16, history_depth=history_depth)
 
     (legacy_result, engine_result), (_, engine_records) = _run_pair(
         graph, start_state, recorder, beam_mode, beam_width=16, history_depth=history_depth
@@ -227,8 +252,7 @@ def test_nn_parity_trained_mlp_lrx8_cuda(beam_mode, history_depth):
 def test_nn_parity_untrained_mlp_cube222_cuda(beam_mode, history_depth):
     graph = CayleyGraph(prepare_graph("cube_2/2/2_6gensQTM"), random_seed=42, device="cuda")
     recorder = _RecordingModel(_seeded_mlp_for(graph))
-    # See the CPU variant for why length 17 / bw 1024.
-    start_state = graph.random_walks(width=1, length=17)[0][-1]
+    start_state = _find_solvable_start(graph, recorder, beam_mode, beam_width=1024, history_depth=history_depth)
 
     (legacy_result, engine_result), (_, engine_records) = _run_pair(
         graph, start_state, recorder, beam_mode, beam_width=1024, history_depth=history_depth
