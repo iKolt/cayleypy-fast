@@ -172,8 +172,10 @@ def _find_solvable_start(graph: CayleyGraph, recorder, beam_mode: str, beam_widt
     legacy solvability by construction (the parity asserts then stay strict).
     Returns (start_state, legacy_probe_result).
     """
-    for length in range(3, 13):
-        start_state = graph.random_walks(width=1, length=length)[0][-1]
+    # nbt walks avoid immediate inverse-generator cancellations (LRX's L/R are
+    # inverses; classic walks often simplify to distance <= 3 and never score).
+    for length in range(5, 15):
+        start_state = graph.random_walks(width=1, length=length, mode="nbt", nbt_history_depth=1)[0][-1]
         probe = graph.beam_search(
             start_state=start_state,
             beam_mode=beam_mode,
