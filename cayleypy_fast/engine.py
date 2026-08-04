@@ -88,6 +88,12 @@ __all__ = [
 
 _MODES = ("simple", "advanced", "iterated", "iterated_batched")
 
+# Byte budget for one survivor-materialization chunk: ``_materialize`` gathers the
+# int64 permutation-index tensor ``perms[gens]`` of shape (K, state_size) — at
+# bw=2^24 on cube333 this single tensor alone was 6.75 GiB and OOM'd a 16 GB
+# P100 (Kaggle gpu-perf, cube333_iterated_bw2p24). Chunking bounds it.
+_MATERIALIZE_CHUNK_BYTES = 2**27
+
 # Ban bookkeeping varies by mode (see module docstring).
 _BAN_BY_MODE = {"simple": "none", "advanced": "cumulative", "iterated": "window", "iterated_batched": "window"}
 
@@ -673,7 +679,23 @@ class FastBeamEngine:
     # -- Survivor materialization (lazy; step 7 + MITM middle state) ------
 
     def _materialize(self, beam_states, parents, gens):
-        """Build neighbor states for the given (parent, gen) pairs with one gather."""
+        """Build neighbor states for the given (parent, gen) pairs with one gather.
+
+        Chunked: the int64 gather index ``perms[gens]`` is (K, state_size) — at
+        bw=2^24, n=54 that is 6.75 GiB (Kaggle P100 OOM). Row-wise chunking
+        keeps the index temp under ``_MATERIALIZE_CHUNK_BYTES``; results are
+        bit-identical (row-wise op, order-preserving concat).
+        """
+        total = parents.numel()
+        chunk = max(1, _MATERIALIZE_CHUNK_BYTES // (self.perms.shape[1] * 8))
+        if total > chunk:
+            outs = []
+            for s in range(0, total, chunk):
+                rows_c = beam_states[parents[s : s + chunk]]
+                if rows_c.dim() == 1:
+                    rows_c = rows_c.unsqueeze(0)
+                outs.append(torch.gather(rows_c, 1, self.perms[gens[s : s + chunk]]))
+            return outs[0] if len(outs) == 1 else torch.cat(outs)
         rows = beam_states[parents]
         if rows.dim() == 1:
             rows = rows.unsqueeze(0)

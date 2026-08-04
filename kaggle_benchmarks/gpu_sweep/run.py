@@ -88,18 +88,31 @@ def make_graph(name: str) -> CayleyGraph:
     raise ValueError(name)
 
 
+# Per-graph (start, max_steps, beam ladder). The sweep measures feasibility +
+# per-step time at FULL beams, not solves:
+#   - Cube graphs (G=12/24) saturate any ladder beam within ~7 steps of the
+#     fixed scrambles; max_steps=10 is enough.
+#   - lrx32 has only 3 generators, so 10 steps reach just 3^10 ~= 59k states —
+#     it needs ~20 steps against a deep (nbt, length-80) scramble to fill
+#     2^20+ beams. A hamming-guided lrx search may still solve early; steps_run
+#     is recorded, so ladder rows with few saturated steps are still readable.
 LADDERS = {
-    "cube333": (_CUBE333_START, [2**20, 2**22, 2**24, 2**25, 2**26, 2**27, 2**28]),
-    "lrx32": (_LRX32_START, [2**20, 2**22, 2**24, 2**25, 2**26, 2**27, 2**28]),
-    "cube555": (_CUBE555_START, [2**22, 2**23, 2**24, 2**25, 2**26]),
+    "cube333": (_CUBE333_START, 10, [2**20, 2**22, 2**24, 2**25, 2**26, 2**27, 2**28]),
+    "lrx32": (None, 20, [2**20, 2**22, 2**24, 2**25, 2**26, 2**27, 2**28]),  # start: nbt-walk, below
+    "cube555": (_CUBE555_START, 10, [2**22, 2**23, 2**24, 2**25, 2**26]),
 }
 
 results: dict = {}
-for graph_name, (start_state, ladder) in LADDERS.items():
+for graph_name, (start_state, max_steps, ladder) in LADDERS.items():
     if time.time() - _KERNEL_T0 > _KERNEL_BUDGET_SEC:
         print(f"budget guard: skipping ladder {graph_name}", flush=True)
         break
     graph = make_graph(graph_name)
+    if start_state is None:  # lrx32: deep non-backtracking scramble (see LADDERS note)
+        np = __import__("numpy")
+        np.random.seed(12345)
+        torch.manual_seed(12345)
+        start_state = graph.random_walks(width=1, length=81, mode="nbt", nbt_history_depth=1)[0][-1]
     wrapped = cayleypy_fast.wrap(graph)
     engine = create_engine(graph, "iterated", None)
     assert engine is not None, f"engine unavailable for {graph_name}"
@@ -117,12 +130,12 @@ for graph_name, (start_state, ladder) in LADDERS.items():
             torch.cuda.synchronize()
             t0 = time.perf_counter()
             res = wrapped.beam_search(
-                start_state=start_state, beam_mode="iterated", beam_width=bw, max_steps=10,
+                start_state=start_state, beam_mode="iterated", beam_width=bw, max_steps=max_steps,
                 history_depth=2, return_path=False,
             )
             torch.cuda.synchronize()
             total = time.perf_counter() - t0
-            steps_run = res.path_length if res.path_found else 10
+            steps_run = res.path_length if res.path_found else max_steps
             row.update(
                 {
                     "status": "ok" if total <= _ROW_TIME_CAP_SEC else "timeout",

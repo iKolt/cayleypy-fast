@@ -248,6 +248,50 @@ def test_engine_beam_stays_capped_with_nn_predictor():
     ), f"engine too slow: {engine_time:.1f}s (legacy {legacy_time:.1f}s)"
 
 
+@pytest.mark.parametrize("beam_mode", ["simple", "advanced", "iterated", "iterated_batched"])
+def test_engine_materialize_chunking_preserves_results(beam_mode, monkeypatch):
+    """Chunked survivor materialization must be bit-identical to the one-gather path.
+
+    Regression test for the cube333 bw=2^24 Kaggle OOM: the chunked branch of
+    ``FastBeamEngine._materialize`` (perms[gens] int64 gather index bounded by
+    ``_MATERIALIZE_CHUNK_BYTES``) is exercised here with a tiny chunk budget so
+    it fires on a small graph.
+    """
+    from cayleypy_fast import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "_MATERIALIZE_CHUNK_BYTES", 64)  # chunk = 1 row on lrx6
+    scramble = [0, 1, 2, 1, 0, 2, 1, 2, 0]
+    legacy_graph = _make_graph("lrx6")
+    legacy_result = legacy_graph.beam_search(
+        start_state=_scramble(legacy_graph, scramble),
+        beam_mode=beam_mode,
+        beam_width=256,
+        max_steps=30,
+        history_depth=2,
+        return_path=True,
+    )
+
+    graph = _make_graph("lrx6")
+    start_state = _scramble(graph, scramble)
+    assert cayleypy_fast.enable()
+    try:
+        assert create_engine(graph, beam_mode, None) is not None
+        result = graph.beam_search(
+            start_state=start_state,
+            beam_mode=beam_mode,
+            beam_width=256,
+            max_steps=30,
+            history_depth=2,
+            return_path=True,
+        )
+    finally:
+        cayleypy_fast.disable()
+    assert result.path_found == legacy_result.path_found
+    assert result.path_found
+    assert result.path_length == legacy_result.path_length
+    graph.validate_path(start_state, result.path)
+
+
 def np_seed():
     """Deterministic seeds matching cayleypy's conftest convention."""
     import random
