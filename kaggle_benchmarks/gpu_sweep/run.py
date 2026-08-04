@@ -1,7 +1,7 @@
 """cayleypy-fast GPU sweep kernel: max-beam ladder on Tesla P100 (engine-only).
 
 Measures beam/memory FEASIBILITY + per-step time at large beams (predictor
-choice is irrelevant here — default hamming). Per graph, ascending beam-width
+choice is irrelevant here ??? default hamming). Per graph, ascending beam-width
 ladder; stop at the first OOM/timeout row. Mode: iterated hd=2,
 return_path=False, max_steps=10. Between rows: gc + cuda cache reset; records
 achieved max beam, peak memory and avg step time.
@@ -26,7 +26,7 @@ subprocess.check_call(
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "__CAYLEYPY_FAST_SHA__"
+_CAYLEYPY_FAST_REF = "79808f8523d4065e728f10a1fa0b6a1e1094d153"
 
 subprocess.check_call(
     [
