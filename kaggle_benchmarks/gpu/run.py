@@ -39,7 +39,7 @@ subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "nu
 # cayleypy pinned to the dev pin (probe-verified target); --no-deps keeps the torch pin.
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
 # cayleypy-fast pinned to an immutable commit SHA (T3 Triton tier).
-_CAYLEYPY_FAST_REF = "8f873d71f7c25f561273ea1f72715022a2dbdc69"
+_CAYLEYPY_FAST_REF = "356b2015ff1a06b36332f3592b36944c5514e6ce"
 _CLONE_DIR = "/kaggle/working/cayleypy-fast-clone"
 
 subprocess.check_call(
