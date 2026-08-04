@@ -110,7 +110,9 @@ for n_rows, n_gens, state_size, dtype, block_b, block_g in [
     (2**16 + 1, 48, 150, torch.int8, 64, 4),
     (3, 7, 150, torch.int64, 64, 4),
 ]:
-    states = torch.randint(0, state_size, (n_rows, state_size), dtype=dtype, device="cuda")
+    # Values mimic permutation indices (< state_size); int8 tops out at 127.
+    hi = min(state_size, 100) if dtype == torch.int8 else state_size
+    states = torch.randint(0, hi, (n_rows, state_size), dtype=dtype, device="cuda")
     vh = torch.randint(-(2**62), 2**62, (state_size, n_gens), dtype=torch.int64, device="cuda")
     vh_t = vh.t().contiguous()
     t0 = time.perf_counter()
