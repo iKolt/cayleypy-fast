@@ -182,9 +182,12 @@ def _find_solvable_start(graph: CayleyGraph, recorder, beam_mode: str, beam_widt
             max_steps=30,
             history_depth=history_depth,
         )
-        if probe.path_found:
+        # Require recorded debug scores: without a scored step the streaming NN
+        # path is never exercised (solved before the beam overflowed), so the
+        # "records > 0" invariant below would be vacuously False.
+        if probe.path_found and probe.debug_scores:
             return start_state
-    raise AssertionError(f"no legacy-solvable walk found in 10 tries ({beam_mode})")
+    raise AssertionError(f"no legacy-solvable walk with scoring found in 10 tries ({beam_mode})")
 
 
 @pytest.mark.parametrize("beam_mode,history_depth", _MODES_HD)
