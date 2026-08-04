@@ -26,7 +26,7 @@ subprocess.check_call(
 subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "h5py", "numba", "kagglehub"])
 
 _CAYLEYPY_SHA = "0b7e109ff2d379fb2509f9fb14f7686e64453503"
-_CAYLEYPY_FAST_REF = "79808f8523d4065e728f10a1fa0b6a1e1094d153"
+_CAYLEYPY_FAST_REF = "fec9031bdbc0c9b2318a992b08de9c9f1686fea2"
 
 subprocess.check_call(
     [
